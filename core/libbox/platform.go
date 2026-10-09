@@ -6,6 +6,7 @@ import (
 	stdjson "encoding/json"
 	"net"
 	"net/netip"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -45,6 +46,9 @@ import (
 // 函数类型,gomobile 绑定时会自动跳过它(不影响 tvOS 侧导出面),仅供包外测试代码用。
 type TunOpener func(options *tun.Options, platformOptions option.TunPlatformOptions) (tun.Tun, error)
 
+// SocketProtector provides the platform's unprivileged socket binding API.
+type SocketProtector interface{ Protect(fd int) error }
+
 // xdPlatformInterface 是喂给 sing-box 的 adapter.PlatformInterface 精简实现。
 // 有意保持 unexported:它的方法签名带 *tun.Options 等复杂类型,gomobile 无法绑定;
 // 未导出后 gomobile 直接忽略整个类型,不会因此报错。
@@ -61,6 +65,7 @@ type xdPlatformInterface struct {
 	ownInterfaceName   string
 	monitor            *platformInterfaceMonitor
 	bindUnderlaySocket bool
+	socketProtector    SocketProtector
 	lineEpoch          string
 	lineRevision       uint64
 	tunInPackets       atomic.Uint64
@@ -132,7 +137,7 @@ func (p *xdPlatformInterface) defaultTunOpener(options *tun.Options, _ option.Tu
 
 // UnderNetworkExtension 返回 true:XDial Apple 数据面始终跑在 NEPacketTunnelProvider 里。
 // sing-box 据此把 MTU 默认收敛到 4064 等 NE 友好参数。
-func (p *xdPlatformInterface) UnderNetworkExtension() bool { return true }
+func (p *xdPlatformInterface) UnderNetworkExtension() bool { return runtime.GOOS != "android" }
 
 // 默认接口/接口列表用于 direct 与 DNS 出站；其余 Wi-Fi 详情、进程归属、通知等
 // 非数据面能力暂不提供，让 sing-box 回退到通用逻辑。
@@ -147,14 +152,18 @@ func (p *xdPlatformInterface) Initialize(networkManager adapter.NetworkManager) 
 func (p *xdPlatformInterface) UsePlatformAutoDetectInterfaceControl() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.bindUnderlaySocket
+	return p.bindUnderlaySocket || p.socketProtector != nil
 }
 
 func (p *xdPlatformInterface) AutoDetectInterfaceControl(fd int) error {
 	p.mu.Lock()
 	enabled := p.bindUnderlaySocket
+	protector := p.socketProtector
 	defaultInterface := cloneInterface(p.defaultInterface)
 	p.mu.Unlock()
+	if protector != nil {
+		return protector.Protect(fd)
+	}
 	if !enabled {
 		return nil
 	}
@@ -366,6 +375,12 @@ func (p *xdPlatformInterface) setDefaultInterface(name string, index int) {
 			updated = p.firstUsableInterfaceLocked()
 		} else {
 			resolved := resolvePlatformInterface(name, index)
+			for _, candidate := range p.networkInterfaces {
+				if candidate.Name == name && candidate.Index == index {
+					resolved = candidate.Interface
+					break
+				}
+			}
 			updated = &resolved
 		}
 	}
@@ -434,6 +449,7 @@ func (p *xdPlatformInterface) switchCandidate(
 		opener:             p.opener,
 		ownInterfaceName:   p.ownInterfaceName,
 		bindUnderlaySocket: p.bindUnderlaySocket,
+		socketProtector:    p.socketProtector,
 	}
 	p.mu.Unlock()
 	if err := candidate.setNetworkInterfaces(snapshots); err != nil {
@@ -461,6 +477,7 @@ func (p *xdPlatformInterface) lineRuntimeCapability() *xdPlatformInterface {
 		networkInterfaces:  cloneNetworkInterfaces(p.networkInterfaces),
 		ownInterfaceName:   p.ownInterfaceName,
 		bindUnderlaySocket: p.bindUnderlaySocket,
+		socketProtector:    p.socketProtector,
 	}
 }
 
@@ -581,9 +598,12 @@ func samePlatformNetworkInterfaces(
 }
 
 type platformNetworkInterfaceSnapshot struct {
-	Name  string `json:"name"`
-	Index int    `json:"index"`
-	Type  string `json:"type"`
+	Name      string   `json:"name"`
+	Index     int      `json:"index"`
+	Type      string   `json:"type"`
+	MTU       int      `json:"mtu,omitempty"`
+	Flags     int      `json:"flags,omitempty"`
+	Addresses []string `json:"addresses,omitempty"`
 }
 
 func (p *xdPlatformInterface) setNetworkInterfaces(snapshots []platformNetworkInterfaceSnapshot) error {
@@ -601,8 +621,24 @@ func (p *xdPlatformInterface) setNetworkInterfaces(snapshots []platformNetworkIn
 		if !loaded {
 			return E.New("platform: unsupported network interface type: ", snapshot.Type)
 		}
+		resolved := resolvePlatformInterface(snapshot.Name, snapshot.Index)
+		// Android restricts Go's netlink-based interface inspection. Use the
+		// same network facts supplied by the Android framework, without choosing
+		// or reprioritizing any network here.
+		if snapshot.MTU > 0 {
+			resolved.MTU = snapshot.MTU
+			resolved.Flags = net.Flags(snapshot.Flags)
+			resolved.Addresses = nil
+			for _, address := range snapshot.Addresses {
+				prefix, err := netip.ParsePrefix(address)
+				if err != nil {
+					return E.Cause(err, "invalid platform interface address")
+				}
+				resolved.Addresses = append(resolved.Addresses, prefix)
+			}
+		}
 		interfaces = append(interfaces, adapter.NetworkInterface{
-			Interface: resolvePlatformInterface(snapshot.Name, snapshot.Index),
+			Interface: resolved,
 			Type:      interfaceType,
 		})
 	}

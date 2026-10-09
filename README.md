@@ -27,6 +27,13 @@ macOS 构建需要 Xcode、XcodeGen、Go，以及 System Extension 签名环境�
 | `make test-macos-transaction` | macOS 事务与构建身份测试 |
 | `make release` | 正式签名、公证和归档；参数及发布关系见更新文档 |
 
+## Android 非官方源码移植
+
+独立 Android 测试端位于 `android/`，通过原 Go 移动核心与 VpnService 转发流量。
+构建入口 `bash scripts/android/build-apk.sh`，支持 ARM64/ARMv7、Android 8.0+。
+此端口不是上游 v0.9.1 官方发行，尚未通过私人 AnyConnect/Tailscale 账号和真机验收。
+见 [构建说明](docs/android/BUILDING.md) 与 [安装使用](docs/android/INSTALL-zh-CN.md)。
+
 ## License
 
 [MIT](LICENSE)

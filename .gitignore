@@ -1,4 +1,5 @@
 build/
+deliverables/
 .DS_Store
 macos/.build/
 /tmp/
@@ -15,3 +16,6 @@ ios/XDialIOS.xcodeproj/
 macos/XDial.xcodeproj/
 # 企业规则、端点与凭据只保存在本地或企业私有仓库。
 PrivateConfig/
+
+# Android Python build helpers
+__pycache__/
