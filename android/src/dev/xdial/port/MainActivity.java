@@ -19,7 +19,7 @@ import libbox.Libbox;
 import org.json.*;
 
 public final class MainActivity extends Activity {
-  static final String VERSION = "0.9.1-port.3";
+  static final String VERSION = "0.9.1-port.4";
   private static final int REQ_VPN = 10, REQ_IMPORT = 20, REQ_EXPORT = 21;
   private static final String[] SS_METHODS = {
     "aes-128-gcm",
@@ -52,6 +52,7 @@ public final class MainActivity extends Activity {
   private libbox.Libbox_ loginCore;
   private String summaryOf, summaryScenario = "", summaryExit = "", summaryProtocol = "", statusSignature;
   private int summaryRules;
+  private boolean summarySplit;
 
   // Live views of the home hero card; null on every other page.
   private FrameLayout heroCard;
@@ -441,17 +442,18 @@ public final class MainActivity extends Activity {
       JSONObject p = profileObj();
       JSONObject scenario = Profiles.activeScenario(p);
       summaryScenario = scenario == null ? "默认场景" : scenario.optString("name");
-      summaryExit = Profiles.exitName(p);
+      String[] head = Profiles.headline(p);
+      summaryExit = head[0];
+      summaryProtocol = head[1];
+      summarySplit = !head[2].isEmpty();
       summaryRules = Profiles.bindingCount(scenario);
-      JSONObject line = Profiles.line(p, exitLineId(scenario));
-      summaryProtocol =
-          scenario != null && !scenario.optString("default_subscription_id").isEmpty()
-              ? "订阅"
-              : line == null ? "直连" : Profiles.typeLabel(line.optString("type"));
       summaryOf = profile;
     }
-    String exit = active && !XDialVpnService.exitName.isEmpty() ? XDialVpnService.exitName : summaryExit;
-    String rules = summaryRules > 0 ? summaryRules + " 条分流规则" : "全部流量走这里";
+    String exit = summaryExit;
+    String rules =
+        summarySplit
+            ? "命中规则走" + summaryExit + "，其余直连"
+            : summaryRules > 0 ? summaryRules + " 条分流规则" : "全部流量走这里";
     String detail = XDialVpnService.detail;
 
     // mode: 0 idle (tone), 1 live (gradient), 2 failed (red)

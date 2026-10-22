@@ -64,7 +64,7 @@ public final class XDialVpnService extends VpnService {
     try {
       if (VpnService.prepare(this) != null) throw new Exception("需要重新允许 VPN 连接");
       String profile = ProfileStore.read(this);
-      exitName = Profiles.exitName(profile);
+      exitName = Profiles.headlineTitle(profile);
       Libbox.generateConnectionPlan(profile);
       underlay = connectivity.getActiveNetwork();
       if (underlay == null) throw new Exception("没有可用网络");
@@ -240,7 +240,7 @@ public final class XDialVpnService extends VpnService {
     Notification n =
         new Notification.Builder(this, "vpn")
             .setContentTitle("XDial · " + state)
-            .setContentText(detail.isEmpty() ? (exitName.isEmpty() ? "点按打开 XDial" : "出口：" + exitName) : detail)
+            .setContentText(detail.isEmpty() ? (exitName.isEmpty() ? "点按打开 XDial" : exitName) : detail)
             .setSmallIcon(dev.xdial.port.R.drawable.xdial_icon)
             .setContentIntent(open)
             .setOngoing(true)

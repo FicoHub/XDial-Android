@@ -102,6 +102,49 @@ final class Profiles {
     return lineName(p, s.optString("default_line_id"));
   }
 
+  /**
+   * What a person is "connected to": {title, protocol, split}. When unmatched traffic goes direct
+   * but rules send some traffic through other lines (e.g. company intranet over the company VPN),
+   * those lines are the headline instead of "直连". split is "1" in that case.
+   */
+  static String[] headline(JSONObject p) {
+    JSONObject s = activeScenario(p);
+    if (s != null && !s.optString("default_subscription_id").isEmpty())
+      return new String[] {exitName(p), "订阅", ""};
+    String exitId = s == null ? "direct" : s.optString("default_line_id", "direct");
+    if (!exitId.isEmpty() && !exitId.equals("direct")) {
+      JSONObject l = line(p, exitId);
+      return new String[] {exitName(p), l == null ? "" : typeLabel(l.optString("type")), ""};
+    }
+    java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>();
+    java.util.LinkedHashSet<String> types = new java.util.LinkedHashSet<>();
+    JSONArray b = s == null ? null : s.optJSONArray("bindings");
+    if (b != null)
+      for (int i = 0; i < b.length(); i++) {
+        JSONObject binding = b.optJSONObject(i);
+        if (binding == null) continue;
+        String id = binding.optString("line_id");
+        if (!binding.optString("subscription_id").isEmpty()) {
+          names.add("订阅");
+          types.add("订阅");
+        } else if (!id.isEmpty() && !id.equals("direct")) {
+          JSONObject l = line(p, id);
+          names.add(l == null ? id : l.optString("name", id));
+          if (l != null) types.add(typeLabel(l.optString("type")));
+        }
+      }
+    if (names.isEmpty()) return new String[] {exitName(p), "直连", ""};
+    return new String[] {String.join("、", names), String.join(" / ", types), "1"};
+  }
+
+  static String headlineTitle(String profile) {
+    try {
+      return headline(new JSONObject(profile))[0];
+    } catch (Exception e) {
+      return "";
+    }
+  }
+
   static String exitName(String profile) {
     try {
       return exitName(new JSONObject(profile));
