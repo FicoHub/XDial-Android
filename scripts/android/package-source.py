@@ -4,7 +4,9 @@ from pathlib import Path
 import subprocess, zipfile
 root = Path(__file__).resolve().parents[2]
 files = subprocess.check_output(['git','ls-files','-z','--cached','--others','--exclude-standard'],cwd=root).decode().split('\0')
-archive = root/'deliverables/XDial-Android-0.9.1-port-source.zip'
+import re
+version = re.search(r'android:versionName="([^"]+)"', (root/'android/AndroidManifest.xml').read_text()).group(1)
+archive = root/f'deliverables/XDial-Android-{version}-source.zip'
 archive.parent.mkdir(exist_ok=True)
 with zipfile.ZipFile(archive,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6) as bundle:
     for name in sorted(set(files)):

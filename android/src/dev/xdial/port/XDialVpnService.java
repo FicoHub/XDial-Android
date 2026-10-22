@@ -12,8 +12,14 @@ import libbox.*;
 import org.json.*;
 
 public final class XDialVpnService extends VpnService {
-  static volatile String state = "未连接", detail = "选择场景后连接";
+  static final int IDLE = 0, CONNECTING = 1, CONNECTED = 2, RECOVERING = 3, DISCONNECTING = 4, FAILED = 5;
+  static volatile int phase = IDLE;
+  static volatile String state = "未连接", detail = "";
   static volatile boolean active = false;
+  /** Raw core/platform error, shown only on the diagnostics page. */
+  static volatile String safeError = "";
+  static volatile long connectedAt = 0;
+  static volatile String exitName = "";
   private static volatile XDialVpnService current;
   private final ExecutorService worker = Executors.newSingleThreadExecutor();
   private final AtomicBoolean cancelled = new AtomicBoolean(false);
@@ -37,18 +43,18 @@ public final class XDialVpnService extends VpnService {
   public int onStartCommand(Intent intent, int flags, int id) {
     String action = intent == null ? "STOP" : intent.getAction();
     if ("STOP".equals(action)) {
-      state = "正在断开";
-      detail = "正在释放 VPN 与线路";
+      set(DISCONNECTING, "正在断开", "");
       cancelled.set(true);
       cancelCore();
-      worker.execute(() -> finish("未连接", "连接已停止"));
+      worker.execute(() -> finish(IDLE, "未连接", ""));
       return START_NOT_STICKY;
     }
     if (active) return START_NOT_STICKY;
     active = true;
     cancelled.set(false);
-    state = "正在连接";
-    detail = "准备线路与规则";
+    safeError = "";
+    connectedAt = 0;
+    set(CONNECTING, "正在连接", "正在准备线路");
     showNotification();
     worker.execute(this::connect);
     return START_NOT_STICKY;
@@ -58,6 +64,7 @@ public final class XDialVpnService extends VpnService {
     try {
       if (VpnService.prepare(this) != null) throw new Exception("需要重新允许 VPN 连接");
       String profile = ProfileStore.read(this);
+      exitName = Profiles.exitName(profile);
       Libbox.generateConnectionPlan(profile);
       underlay = connectivity.getActiveNetwork();
       if (underlay == null) throw new Exception("没有可用网络");
@@ -71,20 +78,18 @@ public final class XDialVpnService extends VpnService {
                   if (cancelled.get()) return;
                   try {
                     String s = new JSONObject(json).optString("status");
-                    if (s.equals("reconnecting")) {
-                      state = "正在恢复";
-                      detail = "核心正在恢复线路";
-                    }
+                    if (s.equals("reconnecting")) set(RECOVERING, "正在恢复", "线路中断，正在自动重连");
+                    if (s.equals("connected") && phase == RECOVERING) set(CONNECTED, "已连接", "");
                     if (s.equals("failed")) {
-                      state = "连接失败";
-                      detail = "线路已失效，请断开后重试";
+                      set(FAILED, "连接中断", "线路已失效，请断开后重新连接");
+                      showNotification();
                     }
                   } catch (Exception ignored) {
                   }
                 }
 
                 public void onError(long code, String message) {
-                  detail = "核心报告错误（" + code + "）；请检查线路与配置";
+                  if (message != null && !message.isEmpty()) safeError = message;
                 }
               });
       core = engine;
@@ -102,8 +107,8 @@ public final class XDialVpnService extends VpnService {
       if (cancelled.get()) throw new Exception("已取消");
       engine.androidStartProfile(profile, getFilesDir().getAbsolutePath());
       if (cancelled.get()) throw new Exception("已取消");
-      state = "已连接";
-      detail = "系统流量由 XDial Go 核心接管";
+      connectedAt = System.currentTimeMillis();
+      set(CONNECTED, "已连接", "");
       showNotification();
       networkCallback =
           new ConnectivityManager.NetworkCallback() {
@@ -119,10 +124,8 @@ public final class XDialVpnService extends VpnService {
 
             @Override
             public void onLost(Network network) {
-              if (network.equals(underlay) && active) {
-                state = "等待网络";
-                detail = "保留 VPN，等待系统网络恢复";
-              }
+              if (network.equals(underlay) && active)
+                set(RECOVERING, "等待网络", "手机网络断开，恢复后自动继续");
             }
           };
       // Let Android choose the best underlying network. The ordinary default
@@ -139,13 +142,18 @@ public final class XDialVpnService extends VpnService {
         connectivity.requestNetwork(request, networkCallback);
       }
     } catch (Exception e) {
-      finish(
-          cancelled.get() ? "未连接" : "连接失败", cancelled.get() ? "连接已取消" : "请检查网络、服务器和配置；详细错误仅在本机查看");
-      safeError = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+      if (!cancelled.get())
+        safeError = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+      if (cancelled.get()) finish(IDLE, "未连接", "");
+      else finish(FAILED, "连接失败", Errors.friendly(safeError));
     }
   }
 
-  static volatile String safeError = "";
+  private static void set(int p, String s, String d) {
+    phase = p;
+    state = s;
+    detail = d;
+  }
 
   private void networkChanged(Network n) {
     if (cancelled.get() || core == null) return;
@@ -156,11 +164,9 @@ public final class XDialVpnService extends VpnService {
       configureUnderlay(core, n, connectivity);
       setUnderlyingNetworks(new Network[] {n});
       core.refreshDNS();
-      state = "已连接";
-      detail = "基础网络已更新";
+      set(CONNECTED, "已连接", "");
     } catch (Exception e) {
-      state = "网络更新失败";
-      detail = "请断开并重新连接";
+      set(FAILED, "网络切换失败", "请断开后重新连接");
     }
   }
 
@@ -234,7 +240,7 @@ public final class XDialVpnService extends VpnService {
     Notification n =
         new Notification.Builder(this, "vpn")
             .setContentTitle("XDial · " + state)
-            .setContentText(detail)
+            .setContentText(detail.isEmpty() ? (exitName.isEmpty() ? "点按打开 XDial" : "出口：" + exitName) : detail)
             .setSmallIcon(dev.xdial.port.R.drawable.xdial_icon)
             .setContentIntent(open)
             .setOngoing(true)
@@ -300,12 +306,12 @@ public final class XDialVpnService extends VpnService {
     }
   }
 
-  private void finish(String next, String message) {
+  private void finish(int next, String title, String message) {
     cleanup();
     if (current == this) {
       active = false;
-      state = next;
-      detail = message;
+      connectedAt = 0;
+      set(next, title, message);
     }
     stopSelf();
   }
@@ -314,7 +320,7 @@ public final class XDialVpnService extends VpnService {
   public void onRevoke() {
     cancelled.set(true);
     cancelCore();
-    worker.execute(() -> finish("授权已撤销", "请重新允许 VPN 连接"));
+    worker.execute(() -> finish(IDLE, "未连接", "VPN 已被系统或其他应用关闭"));
   }
 
   @Override
@@ -325,8 +331,8 @@ public final class XDialVpnService extends VpnService {
           cleanup();
           if (current == this && active) {
             active = false;
-            state = "未连接";
-            detail = "服务已停止";
+            connectedAt = 0;
+            set(IDLE, "未连接", "");
           }
         });
     worker.shutdown();

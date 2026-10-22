@@ -2,7 +2,8 @@
 """Exercise only the task-owned emulator, through real consent and VPN UI."""
 import base64, json, os, re, subprocess, time, xml.etree.ElementTree as ET
 from pathlib import Path
-ADB=os.environ.get('ANDROID_HOME',str(Path.home()/'Library/Android/sdk'))+'/platform-tools/adb'
+_SDK=Path('build/android-sdk')
+ADB=os.environ.get('ANDROID_HOME',str(_SDK.resolve() if (_SDK/'platform-tools').exists() else Path.home()/'Library/Android/sdk'))+'/platform-tools/adb'
 SERIAL='emulator-5580'
 EVIDENCE=Path('build/android-evidence')
 def adb(*args):
@@ -10,34 +11,53 @@ def adb(*args):
 def ui():
     adb('shell','uiautomator','dump','/sdcard/xdial-test-ui.xml')
     return ET.fromstring(adb('shell','cat','/sdcard/xdial-test-ui.xml'))
-def click(text):
-    for _ in range(5):
+def texts():
+    return [n.get('text') for n in ui().iter('node')]
+def scroll(down=True):
+    size=re.findall(r'(\d+)x(\d+)',adb('shell','wm','size'))[-1];w,h=int(size[0]),int(size[1])
+    a,b=(int(h*.75),int(h*.3)) if down else (int(h*.3),int(h*.75))
+    adb('shell','input','swipe',str(w//2),str(a),str(w//2),str(b),'250');time.sleep(.4)
+def click(text,scrolls=6):
+    for attempt in range(5+scrolls):
         tree=ui()
         for n in tree.iter('node'):
             if n.get('text')==text:
                 x1,y1,x2,y2=map(int,re.findall(r'\d+',n.get('bounds')))
                 adb('shell','input','tap',str((x1+x2)//2),str((y1+y2)//2));return
-        time.sleep(.4)
+        if attempt>=4: scroll()
+        else: time.sleep(.4)
     raise AssertionError('UI text missing: '+text)
+def click_any(*options):
+    for _ in range(10):
+        t=texts()
+        for o in options:
+            if o in t: return click(o,0)
+        time.sleep(.4)
+    raise AssertionError('UI text missing: '+'/'.join(options))
+def home():
+    for _ in range(4): adb('shell','input','keyevent','KEYCODE_BACK');time.sleep(.2)
+    launch()
+    for _ in range(4): scroll(False)
 def launch():
     adb('shell','am','start','-n','dev.xdial.port/.MainActivity');time.sleep(.5)
-def connect():
-    launch();click('连接当前场景')
-    for _ in range(10):
-        texts=[n.get('text') for n in ui().iter('node')]
-        if 'OK' in texts:click('OK');continue
-        if 'ALLOW' in texts:click('ALLOW');continue
-        if '已连接' in texts:return
-        if '连接失败' in texts:
-            click('连接错误详情');raise AssertionError(ET.tostring(ui(),encoding='unicode'))
+def connect(timeout=40):
+    home();click('连接',0)
+    end=time.time()+timeout
+    while time.time()<end:
+        t=texts()
+        if 'OK' in t:click('OK',0);continue
+        if 'Allow' in t:click('Allow',0);continue
+        if 'ALLOW' in t:click('ALLOW',0);continue
+        if '已连接' in t:return
+        if '连接失败' in t:raise AssertionError('connect failed: '+' | '.join(x for x in t if x))
         time.sleep(.3)
     raise AssertionError('VPN did not become connected')
 def stop():
-    launch();texts=[n.get('text') for n in ui().iter('node')]
-    if '断开连接' in texts:
-        click('断开连接')
-        for _ in range(10):
-            if '连接当前场景' in [n.get('text') for n in ui().iter('node')]: break
+    home();t=texts()
+    if '断开' in t:
+        click('断开',0)
+        for _ in range(20):
+            if '连接' in texts(): break
             time.sleep(.3)
         else: raise AssertionError('VPN cleanup did not finish')
         for _ in range(60):

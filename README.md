@@ -31,7 +31,7 @@ macOS 构建需要 Xcode、XcodeGen、Go，以及 System Extension 签名环境�
 
 独立 Android 测试端位于 `android/`，通过原 Go 移动核心与 VpnService 转发流量。
 构建入口 `bash scripts/android/build-apk.sh`，支持 ARM64/ARMv7、Android 8.0+。
-此端口不是上游 v0.9.1 官方发行，尚未通过私人 AnyConnect/Tailscale 账号和真机验收。
+此端口不是上游 v0.9.1 官方发行；AnyConnect 已在模拟器中对真实 ocserv 服务器验证，Tailscale 与真机尚未验收。
 见 [构建说明](docs/android/BUILDING.md) 与 [安装使用](docs/android/INSTALL-zh-CN.md)。
 
 ## License

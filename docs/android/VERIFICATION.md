@@ -1,5 +1,44 @@
 # Android 移植验证报告
 
+## 0.9.1-port.2（2026-10-22）
+
+环境：独立 Android 16 / API 36 Google APIs ARM64 模拟器 `XDial_UI_Test`（Pixel 7 尺寸，serial `emulator-5580`）。工具链在 Mac Studio 上重新安装：Go 1.26.5（官方包，SHA-256 已核对）、Temurin JDK 17、Android SDK platform 36 / build-tools 36.0.0 / NDK 27.1.12297006。Go 核心从源码完整重编。
+
+### 本版改动
+
+- **界面重做**：参考手机「设置」的分组列表。首页为状态卡片 + 连接按钮，依次是「当前场景 / 线路 / 配置 / 更多」。每种线路只显示必要字段，证书、SNI 等收进「高级」。支持深色模式、系统手势栏与刘海屏留白、软键盘不遮挡输入框，并在平板/折叠屏展开时限制内容宽度。
+- **AnyConnect 在 Android 上实际不可用的问题已修复**：sslcon 在连接前用 netlink 查询默认路由，Android 10+ 的 SELinux 禁止应用绑定 `netlink_route_socket`，连接在联系服务器前就以 `permission denied` 失败。新增 `vpnc_android.go`，与 iOS 一样把路由/DNS 交给系统 VPN，仅用一次不发包的 UDP connect 取得本机 IPv4 作为客户端标识。上一版只验证了「不可达服务器正确失败」，没有覆盖成功路径。
+- 错误提示改为一句可操作的中文，原始错误放在「连接诊断」里，可复制。
+- 修改配置或切换场景时不必先断开：保存后可一键重新连接。
+- 新增 Shadowsocks / Trojan / VMess / AnyTLS 线路的「测试连接」（复用核心的独立测速会话，不建立 VPN）。
+- 导出配置（核心脱敏，不含密码/密钥/UUID）。
+- 状态卡片只在内容变化时刷新，界面空闲时不再每 0.5 秒重绘。
+
+### 实测结果
+
+| 测试 | 结果 |
+|---|---|
+| 真实企业 AnyConnect（ocserv）登录 | 通过真实界面填写账号后连接成功；服务器与账号不写入仓库 |
+| 企业 AnyConnect 全局出口 | 独立测试 App 访问 ipinfo.io，出口 IP 从宿主网络的出口变为企业 VPN 出口 |
+| 企业 AnyConnect + 分流规则 | 场景规则绑定 Direct 的目标在 VPN 连接期间直连成功 |
+| Shadowsocks「测试连接」 | 回环测试服务端可用时显示「可用 · 115 ms」；不可达时显示失败原因 |
+| 原功能回归 `verify-emulator.py` | 直连 TCP/UDP、DNS、断开恢复、重连、Shadowsocks TCP/UDP、错误密码不回落、场景规则：全部通过 |
+| 生命周期回归 `verify-lifecycle.py` | 完整配置编辑保存、后台、Wi-Fi⇄蜂窝、拒绝授权、全新安装授权、系统设置断开、AnyConnect 不可达失败回滚：全部通过 |
+| 从 0.9.1-port.1 覆盖升级 | 签名证书 SHA-256 `54de45e7…469e` 不变，覆盖安装后旧配置可正常解密并显示 |
+| 深色模式 / 软键盘 | 截图检查通过 |
+| sslcon 单元测试 | `auth`、`rpc`、`vpn` 通过；Android、Linux、iOS 交叉检查通过 |
+
+### 仍未验证
+
+- 真机（含三星折叠屏等厂商 ROM 的后台策略）；以上均为模拟器结果。
+- AnyConnect 用户名或密码错误时的提示：映射了 ocserv 的 `Login failed`，但为避免触发企业账号锁定，没有对真实服务器做错误密码尝试。
+- Tailscale、Trojan、VMess、AnyTLS 对真实服务端的端到端连接。
+- AnyConnect 需要选择用户组的服务器：会提示暂不支持。
+
+---
+
+## 0.9.1-port.1（2026-10-09）
+
 验证日期：2026-10-09。环境：独立 AOSP Android 16 / API 36 ARM64 模拟器 `XDial_Port_Test`（serial `emulator-5580`）。无真机接入；未读取私人 VPN 账号、订阅或 Tailscale 身份。
 
 ## APK

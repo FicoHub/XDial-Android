@@ -24,7 +24,9 @@
 ## 工具链
 
 本次实际使用：Go 1.26.5、Temurin JDK 17.0.20.1+1、Android SDK platform 36、build-tools 36.0.0、NDK 27.1.12297006、SagerNet gomobile/gobind v0.1.13。
-工具只放在任务的 `build/android-tools/`；SDK/NDK复用已有安装。不需要 Gradle，不修改宿主全局 Java/Go 配置。
+工具只放在仓库的 `build/` 下：Go/JDK/gomobile 在 `build/android-tools/`，没有系统 SDK 时可把 SDK 装在 `build/android-sdk/`（脚本会自动使用）。不需要 Gradle，不修改宿主全局 Java/Go 配置。
+脚本把 `GOCACHE` 固定在 `build/android-tools/gocache`：Go 按路径索引只读模块缓存，若模块缓存目录被替换过，共用的全局缓存会给出「no required module provides package」这类误报。
+迁移机器时不要用按文件名过滤密钥的方式复制 Go 模块缓存或 GOROOT（会误删 `go/token`、`nacl/secretbox` 等正常源码），应重新下载。
 
 已备好这些依赖的本机，可在仓库根目录执行：
 
@@ -50,7 +52,7 @@ bash scripts/android/build-apk.sh
 源码归档包含本次 Go 模块源码缓存（`build/android-tools/gopath/pkg/mod`）和构建/测试脚本；Go 编译器、JDK、Android SDK/NDK 仍需安装。
 编译可复现同一功能和版本；签名私钥、ZIP 时间戳和绝对路径会影响 APK 字节哈希，不承诺跨机器逐字节相同。
 
-产物：`deliverables/XDial-Android-0.9.1-port.apk`。
+产物：`deliverables/XDial-Android-<versionName>.apk`，版本取自 `android/AndroidManifest.xml`。
 
 ## 私有测试签名
 

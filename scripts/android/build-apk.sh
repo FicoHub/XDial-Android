@@ -2,10 +2,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT="$PWD"
+if [[ -z "${ANDROID_HOME:-}" && -d "$ROOT/build/android-sdk/platforms" ]]; then
+ ANDROID_HOME="$ROOT/build/android-sdk"
+fi
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_HOME/ndk/27.1.12297006}"
 export JAVA_HOME="${JAVA_HOME:-$ROOT/build/android-tools/jdk/Contents/Home}"
 export GOPATH="${GOPATH:-$ROOT/build/android-tools/gopath}"
+# Keep the build cache with this toolchain: Go indexes the read-only module cache by path.
+export GOCACHE="${GOCACHE:-$ROOT/build/android-tools/gocache}"
 export GOBIN="$ROOT/build/android-tools/bin"
 export PATH="$ROOT/build/android-tools/go/bin:$GOBIN:$JAVA_HOME/bin:$PATH"
 BUILD="$ROOT/build/android-apk"
@@ -17,6 +22,7 @@ if [[ "${SKIP_CORE:-0}" != 1 ]]; then
  export GOWORK="$ROOT/build/patched-go/xdial.work"
  gomobile bind -target=android/arm64,android/arm -androidapi 26 -tags with_gvisor,with_utls -ldflags='-s -w -checklinkname=0 -extldflags=-Wl,-z,max-page-size=16384' -o build/android-tools/libbox.aar ./core/libbox > build/android-evidence/gomobile.log 2>&1
 fi
+rm -rf "$BUILD/classes" "$BUILD/generated" "$BUILD/dex"
 mkdir -p "$BUILD/aar" "$BUILD/classes" "$BUILD/generated" "$BUILD/dex"
 unzip -oq build/android-tools/libbox.aar -d "$BUILD/aar"
 "$SDK_TOOLS/aapt2" compile --dir android/res -o "$BUILD/resources.zip"
@@ -36,11 +42,12 @@ if [[ ! -f "$KEYDIR/xdial-port.jks" ]]; then
  keytool -genkeypair -keystore "$KEYDIR/xdial-port.jks" -storepass:file "$KEYDIR/password" -keypass:file "$KEYDIR/password" -alias xdial-port -keyalg RSA -keysize 3072 -validity 10000 -dname 'CN=XDial Android Private Test, OU=Unofficial Port' > build/android-evidence/signing-create.log 2>&1
  chmod 600 "$KEYDIR/xdial-port.jks"
 fi
+VERSION="$(sed -n 's/.*android:versionName="\([^"]*\)".*/\1/p' android/AndroidManifest.xml)"
 mkdir -p deliverables
-APK="$ROOT/deliverables/XDial-Android-0.9.1-port.apk"
+APK="$ROOT/deliverables/XDial-Android-$VERSION.apk"
 "$SDK_TOOLS/apksigner" sign --v4-signing-enabled false --ks "$KEYDIR/xdial-port.jks" --ks-key-alias xdial-port --ks-pass "file:$KEYDIR/password" --out "$APK" "$BUILD/aligned.apk"
 "$SDK_TOOLS/apksigner" verify --verbose --print-certs "$APK" > build/android-evidence/apk-signature.txt
 "$SDK_TOOLS/aapt2" dump badging "$APK" > build/android-evidence/apk-metadata.txt
 "$SDK_TOOLS/zipalign" -c -P 16 4 "$APK"
-(cd deliverables && shasum -a 256 XDial-Android-0.9.1-port.apk > XDial-Android-0.9.1-port.apk.sha256)
+(cd deliverables && shasum -a 256 "XDial-Android-$VERSION.apk" > "XDial-Android-$VERSION.apk.sha256")
 printf 'APK: %s\n' "$APK"
