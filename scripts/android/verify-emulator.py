@@ -12,7 +12,12 @@ def ui():
     adb('shell','uiautomator','dump','/sdcard/xdial-test-ui.xml')
     return ET.fromstring(adb('shell','cat','/sdcard/xdial-test-ui.xml'))
 def texts():
-    return [n.get('text') for n in ui().iter('node')]
+    # Visible text plus content descriptions (the connection switch is labelled 连接 / 断开).
+    out=[]
+    for n in ui().iter('node'):
+        out.append(n.get('text'))
+        if n.get('content-desc'): out.append(n.get('content-desc'))
+    return out
 def scroll(down=True):
     size=re.findall(r'(\d+)x(\d+)',adb('shell','wm','size'))[-1];w,h=int(size[0]),int(size[1])
     a,b=(int(h*.75),int(h*.3)) if down else (int(h*.3),int(h*.75))
@@ -21,7 +26,7 @@ def click(text,scrolls=6):
     for attempt in range(5+scrolls):
         tree=ui()
         for n in tree.iter('node'):
-            if n.get('text')==text:
+            if n.get('text')==text or n.get('content-desc')==text:
                 x1,y1,x2,y2=map(int,re.findall(r'\d+',n.get('bounds')))
                 adb('shell','input','tap',str((x1+x2)//2),str((y1+y2)//2));return
         if attempt>=4: scroll()

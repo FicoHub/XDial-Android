@@ -6,7 +6,7 @@ spec=importlib.util.spec_from_file_location('vpn_test','scripts/android/verify-e
 v=importlib.util.module_from_spec(spec);spec.loader.exec_module(v)
 results={}
 APK=max(Path('deliverables').glob('XDial-Android-*.apk'),key=lambda p:p.stat().st_mtime).as_posix()
-v.home();v.click('编辑完整配置');v.click('保存',0);time.sleep(1)
+v.home();v.click('更多',0);v.click('编辑完整配置',0);v.click('保存',0);time.sleep(1)
 assert '已保存' in ''.join(x or '' for x in v.texts()) or '连接' in v.texts(),v.texts()
 results['profile_editor_save']='full JSON editor saved through the real UI and core validation'
 v.connect();v.adb('shell','input','keyevent','KEYCODE_HOME');time.sleep(3)

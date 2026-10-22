@@ -19,7 +19,7 @@ import libbox.Libbox;
 import org.json.*;
 
 public final class MainActivity extends Activity {
-  static final String VERSION = "0.9.1-port.2";
+  static final String VERSION = "0.9.1-port.3";
   private static final int REQ_VPN = 10, REQ_IMPORT = 20, REQ_EXPORT = 21;
   private static final String[] SS_METHODS = {
     "aes-128-gcm",
@@ -28,6 +28,9 @@ public final class MainActivity extends Activity {
     "2022-blake3-aes-128-gcm",
     "2022-blake3-aes-256-gcm",
     "2022-blake3-chacha20-poly1305"
+  };
+  private static final String[] TYPE_LABELS = {
+    "AnyConnect", "Shadowsocks", "Trojan", "VMess", "AnyTLS", "Tailscale"
   };
   private static final int TEXT = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
   private static final int URI = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI;
@@ -47,11 +50,15 @@ public final class MainActivity extends Activity {
   private boolean reconnectPending = false;
   private String exportText;
   private libbox.Libbox_ loginCore;
-  private String summaryOf, summaryScenario = "", summaryExit = "", statusSignature;
+  private String summaryOf, summaryScenario = "", summaryExit = "", summaryProtocol = "", statusSignature;
+  private int summaryRules;
 
-  // Live views of the home status card; null on every other page.
-  private View statusDot;
-  private TextView statusTitle, statusDetail, statusError, connectButton;
+  // Live views of the home hero card; null on every other page.
+  private FrameLayout heroCard;
+  private View heroDeco, heroDot;
+  private LinearLayout heroPill, heroStats;
+  private TextView heroPillText, heroTitle, heroSub, statTime, statSince, statProto;
+  private Toggle heroSwitch;
 
   private final Runnable tick =
       new Runnable() {
@@ -94,9 +101,8 @@ public final class MainActivity extends Activity {
   @Override
   public void onConfigurationChanged(Configuration c) {
     super.onConfigurationChanged(c);
-    boolean wasDark = ui.dark;
     Ui next = new Ui(this);
-    if (next.dark != wasDark) {
+    if (next.dark != ui.dark) {
       ui = next;
       ui.styleWindow();
       root.setBackgroundColor(ui.bg);
@@ -120,6 +126,13 @@ public final class MainActivity extends Activity {
     render();
   }
 
+  /** Swap the current page without adding a back step (e.g. changing a new line's type). */
+  void replace(Runnable page) {
+    hideKeyboard();
+    current = page;
+    render();
+  }
+
   void goBack() {
     hideKeyboard();
     if (back.isEmpty()) return;
@@ -135,7 +148,7 @@ public final class MainActivity extends Activity {
   }
 
   void render() {
-    statusTitle = null;
+    heroCard = null;
     statusSignature = null;
     root.removeAllViews();
     current.run();
@@ -212,25 +225,27 @@ public final class MainActivity extends Activity {
   // ---------------------------------------------------------------- home
 
   void home() {
-    LinearLayout page = ui.page(root);
+    LinearLayout page = ui.page(root, false).column;
     JSONObject p = profileObj();
     JSONObject scenario = Profiles.activeScenario(p);
-    ui.topBar(page, "XDial", null, null, null);
-    statusCard(page);
+    ImageView more = ui.header(page, "XDial");
+    more.setOnClickListener(v -> overflow(more));
+    hero(page);
 
-    JSONArray scenarios = p.optJSONArray("scenarios");
-    LinearLayout s = ui.section(page, "当前场景");
-    if (scenarios != null && scenarios.length() > 1)
-      ui.row(s, null, "场景", null, scenario == null ? "" : scenario.optString("name"), this::pickScenario);
-    ui.row(s, null, "默认出口", null, Profiles.exitName(p), this::pickExit);
-    int bindings = Profiles.bindingCount(scenario);
-    if (bindings > 0) ui.row(s, null, "分流规则", null, bindings + " 条", null);
-    ui.footer(page, bindings > 0 ? "命中分流规则的流量按规则走，其余走默认出口。" : "所有流量都走默认出口。");
+    LinearLayout tiles = new LinearLayout(this);
+    ui.tile(
+        tiles,
+        R.drawable.ic_layers,
+        "场景",
+        scenario == null ? "默认场景" : scenario.optString("name"),
+        this::pickScenario);
+    ui.tile(tiles, R.drawable.ic_globe, "默认出口", Profiles.exitName(p), this::pickExit);
+    page.addView(tiles, ui.margins(-1, -2, 0, 10, 0, 0));
 
-    LinearLayout l = ui.section(page, "线路");
+    ui.sectionHeader(page, "线路", "＋ 添加", this::addLine);
     JSONArray lines = p.optJSONArray("lines");
+    String exitId = exitLineId(scenario);
     int shown = 0, total = 0;
-    String exitId = scenario == null ? "" : scenario.optString("default_line_id");
     if (lines != null)
       for (int i = 0; i < lines.length(); i++) {
         JSONObject line = lines.optJSONObject(i);
@@ -238,37 +253,47 @@ public final class MainActivity extends Activity {
         total++;
         if (shown >= 8) continue;
         shown++;
-        lineRow(l, line, exitId);
+        lineCard(page, line, exitId);
       }
-    if (total > shown)
-      ui.row(l, null, "全部 " + total + " 条线路", null, null, () -> show(this::allLines));
-    ui.action(l, "＋ 添加线路", ui.accent, this::addLine);
-    if (total == 0) ui.footer(page, "还没有线路。添加一条，或在下方导入已有配置。");
+    if (total > shown) ui.rowCard(page, "全部 " + total + " 条线路", null, 0, () -> show(this::allLines));
+    if (total == 0) {
+      LinearLayout empty = ui.card(page, 22, 0);
+      empty.setPadding(ui.dp(18), ui.dp(18), ui.dp(18), ui.dp(18));
+      empty.addView(ui.bold(ui.text("还没有线路", 16, ui.text)));
+      TextView t = ui.text("添加一条线路，或导入电脑上的配置。", 13.5f, ui.secondary);
+      t.setPadding(0, ui.dp(4), 0, 0);
+      empty.addView(t);
+      ui.softButton(empty, "＋ 添加线路", 14, this::addLine);
+    }
 
-    LinearLayout c = ui.section(page, "配置");
-    ui.row(c, null, "导入配置文件", null, null, this::importFile);
-    ui.row(c, null, "粘贴配置文本", null, null, () -> show(this::pastePage));
-    ui.row(c, null, "导出配置", "不含密码和密钥", null, this::exportFile);
-    ui.footer(page, "支持 XDial、Clash、Surge 配置。导入会替换当前全部线路和场景。");
-
-    LinearLayout m = ui.section(page, "更多");
-    ui.row(m, null, "连接诊断", null, null, () -> show(this::diagnosticsPage));
-    ui.row(m, null, "编辑完整配置", "高级：直接修改 JSON", null, () -> show(this::jsonPage));
-    ui.row(m, null, "关于与开源许可", null, null, () -> show(this::aboutPage));
-    ui.action(m, "重置全部配置", ui.red, this::resetProfile);
-    ui.footer(page, "版本 " + VERSION + " · 非官方 Android 移植");
+    LinearLayout acts = new LinearLayout(this);
+    ui.pill(acts, "导入配置", this::importMenu);
+    ui.pill(acts, "导出", this::exportFile);
+    ui.pill(acts, "诊断", () -> show(this::diagnosticsPage));
+    page.addView(acts, ui.margins(-1, -2, 0, 16, 0, 0));
+    TextView ver = ui.text("版本 " + VERSION + " · 非官方 Android 移植", 12, ui.chevron);
+    ver.setGravity(Gravity.CENTER);
+    ver.setPadding(0, ui.dp(18), 0, 0);
+    page.addView(ver);
   }
 
-  void lineRow(LinearLayout card, JSONObject line, String exitId) {
+  static String exitLineId(JSONObject scenario) {
+    if (scenario == null || !scenario.optString("default_subscription_id").isEmpty()) return "";
+    return scenario.optString("default_line_id", "direct");
+  }
+
+  void lineCard(LinearLayout page, JSONObject line, String exitId) {
     String id = line.optString("id");
     String type = line.optString("type");
-    ui.row(
-        card,
-        ui.badge(Profiles.badge(type), badgeColor(type)),
+    ui.lineCard(
+        page,
+        Profiles.badge(type),
+        badgeColor(type),
         line.optString("name", id),
         Profiles.summary(line),
-        id.equals(exitId) ? "默认" : null,
-        () -> show(() -> lineEditor(id, null)));
+        id.equals(exitId),
+        () -> show(() -> lineEditor(id, null)),
+        id.equals(exitId) ? null : () -> setExit(id));
   }
 
   int badgeColor(String type) {
@@ -290,53 +315,117 @@ public final class MainActivity extends Activity {
     }
   }
 
-  void allLines() {
-    LinearLayout page = ui.page(root);
-    ui.topBar(page, "全部线路", this::goBack, null, null);
-    JSONObject p = profileObj();
-    JSONObject scenario = Profiles.activeScenario(p);
-    String exitId = scenario == null ? "" : scenario.optString("default_line_id");
-    LinearLayout l = ui.section(page, null);
-    JSONArray lines = p.optJSONArray("lines");
-    if (lines != null)
-      for (int i = 0; i < lines.length(); i++) {
-        JSONObject line = lines.optJSONObject(i);
-        if (line != null && !line.optString("type").equals("direct")) lineRow(l, line, exitId);
-      }
-    ui.action(l, "＋ 添加线路", ui.accent, this::addLine);
+  void overflow(View anchor) {
+    PopupMenu m = new PopupMenu(this, anchor);
+    m.getMenu().add(0, 1, 0, "粘贴配置文本");
+    m.getMenu().add(0, 2, 1, "编辑完整配置");
+    m.getMenu().add(0, 3, 2, "关于与开源许可");
+    m.getMenu().add(0, 4, 3, "重置全部配置");
+    m.setOnMenuItemClickListener(
+        item -> {
+          switch (item.getItemId()) {
+            case 1:
+              show(this::pastePage);
+              break;
+            case 2:
+              show(this::jsonPage);
+              break;
+            case 3:
+              show(this::aboutPage);
+              break;
+            case 4:
+              resetProfile();
+              break;
+          }
+          return true;
+        });
+    m.show();
   }
 
-  void statusCard(LinearLayout page) {
-    LinearLayout card = new LinearLayout(this);
-    card.setOrientation(LinearLayout.VERTICAL);
-    card.setBackground(ui.rounded(ui.card, 18));
-    card.setPadding(ui.dp(20), ui.dp(18), ui.dp(20), ui.dp(20));
-    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
-    lp.topMargin = ui.dp(12);
-    page.addView(card, lp);
+  void importMenu() {
+    new AlertDialog.Builder(this)
+        .setTitle("导入配置")
+        .setItems(
+            new String[] {"从文件选择", "粘贴配置文本"},
+            (d, w) -> {
+              if (w == 0) importFile();
+              else show(this::pastePage);
+            })
+        .setNegativeButton("取消", null)
+        .show();
+  }
 
-    LinearLayout head = new LinearLayout(this);
-    head.setGravity(Gravity.CENTER_VERTICAL);
-    statusDot = new View(this);
-    LinearLayout.LayoutParams dp = new LinearLayout.LayoutParams(ui.dp(12), ui.dp(12));
-    dp.rightMargin = ui.dp(10);
-    head.addView(statusDot, dp);
-    statusTitle = ui.bold(ui.text("", 24, ui.text));
-    head.addView(statusTitle);
-    card.addView(head);
+  // ---------------------------------------------------------------- hero card
 
-    statusDetail = ui.text("", 15, ui.secondary);
-    statusDetail.setPadding(0, ui.dp(6), 0, 0);
-    card.addView(statusDetail);
+  void hero(LinearLayout page) {
+    FrameLayout card = new FrameLayout(this);
+    card.setClipToOutline(true);
+    heroDeco = new View(this);
+    heroDeco.setBackground(ui.oval(0x14ffffff));
+    FrameLayout.LayoutParams dl =
+        new FrameLayout.LayoutParams(ui.dp(220), ui.dp(220), Gravity.TOP | Gravity.END);
+    dl.topMargin = -ui.dp(70);
+    dl.rightMargin = -ui.dp(60);
+    card.addView(heroDeco, dl);
 
-    statusError = ui.text("", 14, ui.red);
-    statusError.setPadding(0, ui.dp(10), 0, 0);
-    statusError.setOnClickListener(v -> show(this::diagnosticsPage));
-    card.addView(statusError);
+    LinearLayout inner = new LinearLayout(this);
+    inner.setOrientation(LinearLayout.VERTICAL);
+    inner.setPadding(ui.dp(20), ui.dp(18), ui.dp(18), ui.dp(20));
+    LinearLayout top = new LinearLayout(this);
+    top.setGravity(Gravity.CENTER_VERTICAL);
+    heroPill = new LinearLayout(this);
+    heroPill.setGravity(Gravity.CENTER_VERTICAL);
+    heroPill.setPadding(ui.dp(11), ui.dp(6), ui.dp(12), ui.dp(6));
+    heroDot = new View(this);
+    heroPill.addView(heroDot, ui.margins(ui.dp(8), ui.dp(8), 0, 0, 7, 0));
+    heroPillText = ui.bold(ui.text("", 13, ui.text));
+    heroPill.addView(heroPillText);
+    top.addView(heroPill);
+    top.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
+    heroSwitch = new Toggle(this, 0x59ffffff, 0x26000000);
+    heroSwitch.setOnClickListener(v -> onConnectTapped());
+    top.addView(heroSwitch, new LinearLayout.LayoutParams(ui.dp(66), ui.dp(38)));
+    inner.addView(top);
 
-    View gap = new View(this);
-    card.addView(gap, new LinearLayout.LayoutParams(1, ui.dp(16)));
-    connectButton = ui.button(card, "连接", ui.fill, this::onConnectTapped);
+    heroTitle = ui.bold(ui.text("", 30, ui.text));
+    heroTitle.setSingleLine(true);
+    heroTitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
+    heroTitle.setPadding(0, ui.dp(16), 0, ui.dp(2));
+    inner.addView(heroTitle);
+    heroSub = ui.text("", 14, ui.secondary);
+    heroSub.setLineSpacing(0, 1.15f);
+    inner.addView(heroSub);
+
+    heroStats = new LinearLayout(this);
+    heroStats.setPadding(0, ui.dp(16), 0, 0);
+    statTime = stat(heroStats, "时长");
+    statSince = stat(heroStats, "连接于");
+    statProto = stat(heroStats, "协议");
+    inner.addView(heroStats);
+    card.addView(inner, new FrameLayout.LayoutParams(-1, -2));
+    card.setOnClickListener(
+        v -> {
+          if (XDialVpnService.phase == XDialVpnService.FAILED || !XDialVpnService.safeError.isEmpty())
+            show(this::diagnosticsPage);
+        });
+    heroCard = card;
+    page.addView(card, ui.margins(-1, -2, 0, 4, 0, 0));
+  }
+
+  TextView stat(LinearLayout row, String label) {
+    LinearLayout col = new LinearLayout(this);
+    col.setOrientation(LinearLayout.VERTICAL);
+    TextView l = ui.text(label, 12.5f, 0xffffffff);
+    l.setAlpha(0.8f);
+    col.addView(l);
+    TextView v = ui.bold(ui.text("", 16, 0xffffffff));
+    v.setFontFeatureSettings("tnum");
+    v.setPadding(0, ui.dp(2), 0, 0);
+    col.addView(v);
+    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+    lp.rightMargin = ui.dp(22);
+    row.addView(col, lp);
+    return v;
   }
 
   void updateStatus() {
@@ -347,91 +436,134 @@ public final class MainActivity extends Activity {
       startVPN();
       return;
     }
-    if (statusTitle == null) return;
-    int dot, button;
-    String title = XDialVpnService.state, action;
-    boolean enabled = !busy;
-    switch (ph) {
-      case XDialVpnService.CONNECTING:
-        dot = ui.orange;
-        title = "正在连接…";
-        action = "取消";
-        button = ui.secondary;
-        break;
-      case XDialVpnService.CONNECTED:
-        dot = ui.green;
-        title = "已连接";
-        action = "断开";
-        button = ui.red;
-        break;
-      case XDialVpnService.RECOVERING:
-        dot = ui.orange;
-        action = "断开";
-        button = ui.red;
-        break;
-      case XDialVpnService.DISCONNECTING:
-        dot = ui.secondary;
-        title = "正在断开…";
-        action = "正在断开…";
-        button = ui.secondary;
-        enabled = false;
-        break;
-      case XDialVpnService.FAILED:
-        dot = ui.red;
-        action = active ? "断开" : "重新连接";
-        button = active ? ui.red : ui.fill;
-        break;
-      default:
-        dot = ui.secondary;
-        title = "未连接";
-        action = "连接";
-        button = ui.fill;
-    }
-    if (reconnectPending) {
-      title = "正在重新连接…";
-      enabled = false;
-    }
-    String error = ph == XDialVpnService.FAILED ? XDialVpnService.detail : "";
-    if (ph == XDialVpnService.IDLE && !XDialVpnService.detail.isEmpty()) error = XDialVpnService.detail;
-
+    if (heroCard == null) return;
     if (summaryOf != profile) {
       JSONObject p = profileObj();
       JSONObject scenario = Profiles.activeScenario(p);
-      JSONArray scenarios = p.optJSONArray("scenarios");
-      summaryScenario =
-          scenario != null && scenarios != null && scenarios.length() > 1
-              ? scenario.optString("name") + " · "
-              : "";
+      summaryScenario = scenario == null ? "默认场景" : scenario.optString("name");
       summaryExit = Profiles.exitName(p);
+      summaryRules = Profiles.bindingCount(scenario);
+      JSONObject line = Profiles.line(p, exitLineId(scenario));
+      summaryProtocol =
+          scenario != null && !scenario.optString("default_subscription_id").isEmpty()
+              ? "订阅"
+              : line == null ? "直连" : Profiles.typeLabel(line.optString("type"));
       summaryOf = profile;
     }
     String exit = active && !XDialVpnService.exitName.isEmpty() ? XDialVpnService.exitName : summaryExit;
-    StringBuilder detail = new StringBuilder(summaryScenario);
-    detail.append("出口：").append(exit);
-    long since = XDialVpnService.connectedAt;
-    if (ph == XDialVpnService.CONNECTED && since > 0)
-      detail.append("\n连接于 ")
-          .append(new java.text.SimpleDateFormat("HH:mm", Locale.ROOT).format(new Date(since)));
-    else if ((ph == XDialVpnService.RECOVERING || ph == XDialVpnService.CONNECTING)
-        && !XDialVpnService.detail.isEmpty()) detail.append("\n").append(XDialVpnService.detail);
-    // Touch views only on change: a steady UI saves battery and lets the system go idle.
-    String signature = title + '|' + detail + '|' + error + '|' + action + '|' + button + '|' + enabled + '|' + dot + '|' + ph;
-    if (signature.equals(statusSignature) && statusTitle.getText().length() > 0) return;
-    statusSignature = signature;
-    GradientDrawable d = new GradientDrawable();
-    d.setShape(GradientDrawable.OVAL);
-    d.setColor(dot);
-    statusDot.setBackground(d);
-    statusTitle.setText(title);
-    statusDetail.setText(detail.toString());
-    statusError.setText(error.isEmpty() ? "" : error + "  查看详情 ›");
-    statusError.setTextColor(ph == XDialVpnService.FAILED ? ui.red : ui.secondary);
-    statusError.setVisibility(error.isEmpty() ? View.GONE : View.VISIBLE);
+    String rules = summaryRules > 0 ? summaryRules + " 条分流规则" : "全部流量走这里";
+    String detail = XDialVpnService.detail;
 
-    connectButton.setText(action);
-    connectButton.setBackground(ui.ripple(button, 12));
-    connectButton.setEnabled(enabled);
-    connectButton.setAlpha(enabled ? 1f : 0.5f);
+    // mode: 0 idle (tone), 1 live (gradient), 2 failed (red)
+    int mode;
+    String pill, sub, contentDesc;
+    int dotColor;
+    boolean on, enabled = !busy;
+    switch (ph) {
+      case XDialVpnService.CONNECTING:
+        mode = 1;
+        pill = "正在连接…";
+        dotColor = 0xffffd38a;
+        sub = detail.isEmpty() ? "正在准备线路" : detail;
+        on = true;
+        break;
+      case XDialVpnService.CONNECTED:
+        mode = 1;
+        pill = "已连接";
+        dotColor = 0xff7cf2b0;
+        sub = summaryScenario + " · " + rules;
+        on = true;
+        break;
+      case XDialVpnService.RECOVERING:
+        mode = 1;
+        pill = XDialVpnService.state;
+        dotColor = 0xffffd38a;
+        sub = detail.isEmpty() ? "正在恢复连接" : detail;
+        on = true;
+        break;
+      case XDialVpnService.DISCONNECTING:
+        mode = 0;
+        pill = "正在断开…";
+        dotColor = ui.secondary;
+        sub = summaryScenario;
+        on = false;
+        enabled = false;
+        break;
+      case XDialVpnService.FAILED:
+        mode = 2;
+        pill = active ? "连接中断" : "连接失败";
+        dotColor = ui.red;
+        sub = (detail.isEmpty() ? Errors.friendly(XDialVpnService.safeError) : detail) + " 点此查看详情";
+        on = active;
+        break;
+      default:
+        mode = 0;
+        pill = "未连接";
+        dotColor = ui.secondary;
+        sub = detail.isEmpty() ? summaryScenario + " · 打开右上角开关即可连接" : detail;
+        on = false;
+    }
+    if (reconnectPending) {
+      mode = 1;
+      pill = "正在重新连接…";
+      dotColor = 0xffffd38a;
+      sub = "应用新的配置";
+      on = true;
+      enabled = false;
+    }
+    contentDesc = on ? "断开" : "连接";
+    long since = XDialVpnService.connectedAt;
+    boolean stats = ph == XDialVpnService.CONNECTED && since > 0 && !reconnectPending;
+    String time = stats ? minutes(System.currentTimeMillis() - since) : "";
+    String sinceText =
+        stats ? new java.text.SimpleDateFormat("HH:mm", Locale.ROOT).format(new Date(since)) : "";
+
+    // Touch views only on change: a steady UI saves battery and lets the system go idle.
+    String signature =
+        mode + "|" + pill + "|" + sub + "|" + exit + "|" + on + "|" + enabled + "|" + time + "|"
+            + sinceText + "|" + summaryProtocol + "|" + dotColor;
+    if (signature.equals(statusSignature)) return;
+    statusSignature = signature;
+
+    boolean live = mode == 1;
+    if (live) {
+      GradientDrawable g =
+          new GradientDrawable(
+              GradientDrawable.Orientation.TL_BR, new int[] {ui.heroStart, ui.heroEnd});
+      g.setCornerRadius(ui.dp(30));
+      heroCard.setBackground(g);
+    } else {
+      heroCard.setBackground(ui.rounded(mode == 2 ? ui.redSoft : ui.tone, 30));
+    }
+    heroDeco.setVisibility(live ? View.VISIBLE : View.GONE);
+    int fg = live ? 0xffffffff : ui.text;
+    heroTitle.setText(exit);
+    heroTitle.setTextColor(fg);
+    heroSub.setText(sub);
+    heroSub.setTextColor(live ? 0xc8ffffff : mode == 2 ? ui.red : ui.secondary);
+    heroPillText.setText(pill);
+    heroPillText.setTextColor(live ? 0xffffffff : mode == 2 ? ui.red : ui.text);
+    heroPill.setBackground(
+        ui.rounded(live ? 0x2effffff : mode == 2 ? (ui.red & 0x00ffffff) | 0x1a000000 : (ui.dark ? 0x14ffffff : 0x0f000000), 999));
+    heroDot.setBackground(ui.oval(dotColor));
+    heroStats.setVisibility(stats ? View.VISIBLE : View.GONE);
+    statTime.setText(time);
+    statSince.setText(sinceText);
+    statProto.setText(summaryProtocol);
+    heroSwitch.setColors(
+        live ? 0x59ffffff : ui.accent, live ? 0x26000000 : (ui.dark ? 0x26ffffff : 0x26000000));
+    if (heroSwitch.isChecked() != on) heroSwitch.setChecked(on, true);
+    heroSwitch.setEnabled(enabled);
+    heroSwitch.setAlpha(enabled ? 1f : 0.5f);
+    heroSwitch.setContentDescription(contentDesc);
+  }
+
+  /** Coarse elapsed time; it changes at most once a minute so the screen stays idle. */
+  static String minutes(long ms) {
+    long m = Math.max(0, ms / 60000);
+    if (m < 1) return "<1 分钟";
+    if (m < 60) return m + " 分钟";
+    return (m / 60) + " 小时 " + (m % 60) + " 分";
   }
 
   static String duration(long ms) {
@@ -442,7 +574,7 @@ public final class MainActivity extends Activity {
   }
 
   void onConnectTapped() {
-    if (busy) return;
+    if (busy || reconnectPending) return;
     if (XDialVpnService.active) stopVPN();
     else startVPN();
   }
@@ -455,8 +587,10 @@ public final class MainActivity extends Activity {
     int checked = 0;
     String active = p.optString("active_scenario_id");
     for (int i = 0; i < a.length(); i++) {
-      names[i] = a.optJSONObject(i).optString("name");
-      if (a.optJSONObject(i).optString("id").equals(active)) checked = i;
+      JSONObject s = a.optJSONObject(i);
+      int rules = Profiles.bindingCount(s);
+      names[i] = s.optString("name") + (rules > 0 ? "（" + rules + " 条规则）" : "");
+      if (s.optString("id").equals(active)) checked = i;
     }
     new AlertDialog.Builder(this)
         .setTitle("选择场景")
@@ -466,6 +600,7 @@ public final class MainActivity extends Activity {
             (d, which) -> {
               d.dismiss();
               try {
+                if (a.getJSONObject(which).getString("id").equals(active)) return;
                 p.put("active_scenario_id", a.getJSONObject(which).getString("id"));
                 commit(p);
               } catch (JSONException e) {
@@ -491,10 +626,8 @@ public final class MainActivity extends Activity {
         ids.add(l.optString("id"));
         names.add(l.optString("name") + "（" + Profiles.typeLabel(l.optString("type")) + "）");
       }
-    int checked =
-        scenario.optString("default_subscription_id").isEmpty()
-            ? Math.max(0, ids.indexOf(scenario.optString("default_line_id", "direct")))
-            : -1;
+    String exitId = exitLineId(scenario);
+    int checked = exitId.isEmpty() ? -1 : Math.max(0, ids.indexOf(exitId));
     new AlertDialog.Builder(this)
         .setTitle("默认出口")
         .setSingleChoiceItems(
@@ -502,16 +635,23 @@ public final class MainActivity extends Activity {
             checked,
             (d, which) -> {
               d.dismiss();
-              try {
-                scenario.put("default_line_id", ids.get(which));
-                scenario.remove("default_subscription_id");
-                commit(p);
-              } catch (JSONException e) {
-                alert("无法修改出口", e.getMessage());
-              }
+              if (which != checked) setExit(ids.get(which));
             })
         .setNegativeButton("取消", null)
         .show();
+  }
+
+  void setExit(String lineId) {
+    JSONObject p = profileObj();
+    JSONObject scenario = Profiles.activeScenario(p);
+    if (scenario == null) return;
+    try {
+      scenario.put("default_line_id", lineId);
+      scenario.remove("default_subscription_id");
+      commit(p);
+    } catch (JSONException e) {
+      alert("无法修改出口", e.getMessage());
+    }
   }
 
   // ---------------------------------------------------------------- VPN
@@ -566,22 +706,10 @@ public final class MainActivity extends Activity {
   // ---------------------------------------------------------------- lines
 
   void addLine() {
-    String[] labels = {
-      "AnyConnect　公司 VPN（Cisco / ocserv）",
-      "Shadowsocks",
-      "Trojan",
-      "VMess",
-      "AnyTLS",
-      "Tailscale"
-    };
-    new AlertDialog.Builder(this)
-        .setTitle("选择线路类型")
-        .setItems(labels, (d, which) -> show(() -> lineEditor(null, Profiles.TYPES[which])))
-        .setNegativeButton("取消", null)
-        .show();
+    show(() -> lineEditor(null, "vpn"));
   }
 
-  /** Type-specific form. Only the fields a person needs are shown; rare ones sit under 高级. */
+  /** Type-specific form. Only the fields a person needs are shown; rare ones sit under 高级选项. */
   void lineEditor(String id, String newType) {
     JSONObject p = profileObj();
     JSONObject existing = id == null ? null : Profiles.line(p, id);
@@ -597,107 +725,114 @@ public final class MainActivity extends Activity {
     }
     String type = existing == null ? newType : existing.optString("type");
     boolean group = type.equals("selector") || type.equals("urltest");
-    LinearLayout page = ui.page(root);
-    final Runnable[] save = new Runnable[1];
-    ui.topBar(
-        page, id == null ? "添加线路" : "编辑线路", this::goBack, group ? null : "保存", () -> save[0].run());
+    Ui.Page pg = ui.page(root, true);
+    LinearLayout page = pg.column;
+    ui.nav(page, id == null ? "添加线路" : "编辑线路", this::goBack);
+    int typeIndex = Arrays.asList(Profiles.TYPES).indexOf(type);
+    if (id == null)
+      ui.chips(page, TYPE_LABELS, typeIndex, i -> replace(() -> lineEditor(null, Profiles.TYPES[i])));
+    else ui.chips(page, new String[] {Profiles.typeLabel(type)}, 0, null);
 
-    LinearLayout basic = ui.section(page, null);
-    ui.row(basic, ui.badge(Profiles.badge(type), badgeColor(type)), "类型", null, Profiles.typeLabel(type), null);
-    EditText name = ui.input(basic, "名称", l.optString("name"), defaultName(type), TEXT);
-
+    EditText name = ui.field(page, "名称", l.optString("name"), defaultName(type), TEXT);
     EditText server = null, port = null, user = null, secret = null, sni = null, exitNode = null;
-    Switch insecure = null, magic = null;
+    Toggle insecure = null, magic = null;
     final String[] method = {l.optString("ss_method", SS_METHODS[0])};
-    String note = null;
-    LinearLayout s;
     switch (type) {
       case "vpn":
-        s = ui.section(page, "服务器");
-        server = ui.input(s, "地址", l.optString("vpn_server"), "vpn.example.com:8443", URI);
-        user = ui.input(s, "用户名", l.optString("vpn_username"), "必填", EMAIL);
-        secret = ui.input(s, "密码", l.optString("vpn_password"), "必填", SECRET);
-        note = "填写 AnyConnect 或 ocserv 服务器。端口不是 443 时要带上，例如 vpn.example.com:8443。";
+        server = ui.field(page, "服务器地址", l.optString("vpn_server"), "vpn.example.com:8443", URI);
+        ui.note(page, "端口不是 443 时要带上");
+        user = ui.field(page, "用户名", l.optString("vpn_username"), "必填", EMAIL);
+        secret = ui.field(page, "密码", l.optString("vpn_password"), "必填", SECRET);
         break;
       case "shadowsocks":
-        s = ui.section(page, "服务器");
-        server = ui.input(s, "地址", l.optString("ss_server"), "域名或 IP", URI);
-        port = ui.input(s, "端口", portText(l.optInt("ss_port")), "8388", NUMBER);
-        Ui.Row m = ui.row(s, null, "加密方式", null, method[0], null);
-        m.view.setOnClickListener(
-            v ->
-                new AlertDialog.Builder(this)
-                    .setTitle("加密方式")
-                    .setSingleChoiceItems(
-                        SS_METHODS,
-                        Arrays.asList(SS_METHODS).indexOf(method[0]),
-                        (d, w) -> {
-                          method[0] = SS_METHODS[w];
-                          m.value.setText(method[0]);
-                          d.dismiss();
-                        })
-                    .show());
-        secret = ui.input(s, "密码", l.optString("ss_password"), "必填", SECRET);
+        server = ui.field(page, "服务器地址", l.optString("ss_server"), "域名或 IP", URI);
+        port = ui.field(page, "端口", portText(l.optInt("ss_port")), "8388", NUMBER);
+        final TextView[] m = new TextView[1];
+        m[0] =
+            ui.pickField(
+                page,
+                "加密方式",
+                method[0],
+                () ->
+                    new AlertDialog.Builder(this)
+                        .setTitle("加密方式")
+                        .setSingleChoiceItems(
+                            SS_METHODS,
+                            Arrays.asList(SS_METHODS).indexOf(method[0]),
+                            (d, w) -> {
+                              method[0] = SS_METHODS[w];
+                              m[0].setText(method[0]);
+                              d.dismiss();
+                            })
+                        .show());
+        secret = ui.field(page, "密码", l.optString("ss_password"), "必填", SECRET);
         break;
       case "trojan":
-        s = ui.section(page, "服务器");
-        server = ui.input(s, "地址", l.optString("trojan_server"), "域名或 IP", URI);
-        port = ui.input(s, "端口", portText(l.optInt("trojan_port")), "443", NUMBER);
-        secret = ui.input(s, "密码", l.optString("trojan_password"), "必填", SECRET);
+        server = ui.field(page, "服务器地址", l.optString("trojan_server"), "域名或 IP", URI);
+        port = ui.field(page, "端口", portText(l.optInt("trojan_port")), "443", NUMBER);
+        secret = ui.field(page, "密码", l.optString("trojan_password"), "必填", SECRET);
         break;
       case "vmess":
-        s = ui.section(page, "服务器");
-        server = ui.input(s, "地址", l.optString("vmess_server"), "域名或 IP", URI);
-        port = ui.input(s, "端口", portText(l.optInt("vmess_port")), "443", NUMBER);
-        user = ui.input(s, "UUID", l.optString("vmess_uuid"), "xxxxxxxx-xxxx-…", TEXT);
+        server = ui.field(page, "服务器地址", l.optString("vmess_server"), "域名或 IP", URI);
+        port = ui.field(page, "端口", portText(l.optInt("vmess_port")), "443", NUMBER);
+        user = ui.field(page, "UUID", l.optString("vmess_uuid"), "xxxxxxxx-xxxx-…", TEXT);
         break;
       case "anytls":
-        s = ui.section(page, "服务器");
-        server = ui.input(s, "地址", l.optString("anytls_server"), "域名或 IP", URI);
-        port = ui.input(s, "端口", portText(l.optInt("anytls_port")), "443", NUMBER);
-        secret = ui.input(s, "密码", l.optString("anytls_password"), "必填", SECRET);
+        server = ui.field(page, "服务器地址", l.optString("anytls_server"), "域名或 IP", URI);
+        port = ui.field(page, "端口", portText(l.optInt("anytls_port")), "443", NUMBER);
+        secret = ui.field(page, "密码", l.optString("anytls_password"), "必填", SECRET);
         break;
       case "tailscale":
-        s = ui.section(page, "Tailscale");
-        exitNode = ui.input(s, "出口节点", l.optString("tailscale_exit_node"), "可留空，填 Tailscale IP", URI);
-        magic = ui.toggle(s, "MagicDNS", "访问 Tailnet 内设备的名称", l.optBoolean("tailscale_magic_dns"));
-        note = "出口节点留空时，只有访问 Tailnet 内设备的流量走 Tailscale。";
+        exitNode =
+            ui.field(page, "出口节点", l.optString("tailscale_exit_node"), "可留空，填 Tailscale IP", URI);
+        ui.note(page, "留空时，只有访问 Tailnet 内设备的流量走 Tailscale。");
+        magic =
+            ui.toggleCard(
+                page, "MagicDNS", "用名称访问 Tailnet 内的设备", l.optBoolean("tailscale_magic_dns"), 12);
         break;
       default:
-        s = ui.section(page, "线路组");
         JSONArray members = l.optJSONArray("group_members");
-        ui.row(s, null, "包含线路", null, (members == null ? 0 : members.length()) + " 条", null);
-        note = "线路组来自导入的配置。需要修改时，请在电脑端改好后重新导入。";
-    }
-    if (note != null) ui.footer(page, note);
-
-    if (type.equals("trojan") || type.equals("anytls") || type.equals("vpn")) {
-      LinearLayout adv = ui.section(page, "高级");
-      if (!type.equals("vpn"))
-        sni = ui.input(adv, "SNI", l.optString(type + "_sni"), "默认与服务器地址相同", URI);
-      insecure = ui.toggle(adv, "跳过证书验证", null, l.optBoolean("allow_insecure"));
-      ui.footer(page, "仅在服务器使用自签证书时开启，会降低安全性。");
+        ui.rowCard(page, "包含线路", (members == null ? 0 : members.length()) + " 条", 12, null);
+        ui.note(page, "线路组来自导入的配置。需要修改时，请在电脑端改好后重新导入。");
     }
 
     JSONObject scenario = Profiles.activeScenario(p);
-    String currentExit = scenario == null ? "direct" : scenario.optString("default_line_id", "direct");
+    String currentExit = exitLineId(scenario);
     boolean wasExit = id != null && id.equals(currentExit);
-    LinearLayout use = ui.section(page, null);
-    Switch makeDefault =
-        ui.toggle(use, "设为默认出口", null, wasExit || (id == null && currentExit.equals("direct")));
+    Toggle makeDefault =
+        ui.toggleCard(
+            page, "设为默认出口", null, wasExit || (id == null && currentExit.equals("direct")), 16);
 
-    if (type.equals("tailscale") && id != null) {
-      LinearLayout t = ui.section(page, null);
-      ui.action(t, "登录 Tailscale", ui.accent, () -> tailscaleLogin(id));
-      ui.footer(page, "首次使用需要登录一次。XDial 的登录与手机上的 Tailscale App 相互独立。");
+    if (type.equals("trojan") || type.equals("anytls") || type.equals("vpn")) {
+      LinearLayout adv = new LinearLayout(this);
+      adv.setOrientation(LinearLayout.VERTICAL);
+      if (!type.equals("vpn"))
+        sni = ui.field(adv, "SNI", l.optString(type + "_sni"), "默认与服务器地址相同", URI);
+      insecure = ui.toggleCard(adv, "跳过证书验证", "仅在服务器使用自签证书时开启", l.optBoolean("allow_insecure"), 10);
+      boolean open = l.optBoolean("allow_insecure") || !l.optString(type + "_sni").isEmpty();
+      Ui.Row row =
+          ui.rowCard(page, "高级选项", null, 8, null);
+      row.title.setTextColor(ui.secondary);
+      row.view.addView(ui.chevron());
+      adv.setVisibility(open ? View.VISIBLE : View.GONE);
+      row.view.setVisibility(open ? View.GONE : View.VISIBLE);
+      ui.clickable(
+          row.view,
+          ui.rounded(ui.card, 20),
+          20,
+          () -> {
+            row.view.setVisibility(View.GONE);
+            adv.setVisibility(View.VISIBLE);
+          });
+      page.addView(adv);
     }
 
     final EditText fName = name, fServer = server, fPort = port, fUser = user, fSecret = secret;
     final EditText fSni = sni, fExit = exitNode;
-    final Switch fInsecure = insecure, fMagic = magic;
+    final Toggle fInsecure = insecure, fMagic = magic;
     final JSONObject line = l;
     final String lineId = id == null ? Profiles.newId(p, type) : id;
-    final java.util.concurrent.Callable<JSONObject> build =
+    final Callable<JSONObject> build =
         () -> {
           String n = fName.getText().toString().trim();
           line.put("id", lineId);
@@ -753,28 +888,26 @@ public final class MainActivity extends Activity {
         };
 
     if (type.equals("shadowsocks") || type.equals("trojan") || type.equals("vmess") || type.equals("anytls")) {
-      LinearLayout t = ui.section(page, null);
       final TextView[] result = new TextView[1];
-      result[0] =
-          ui.action(
-              t,
-              "测试连接",
-              ui.accent,
-              () -> {
-                try {
-                  testLine(build.call(), result[0]);
-                } catch (Exception e) {
-                  alert("无法测试", e.getMessage());
-                }
-              });
+      ui.softButton(
+          page,
+          "测试连接",
+          16,
+          () -> {
+            try {
+              testLine(build.call(), result[0]);
+            } catch (Exception e) {
+              alert("无法测试", e.getMessage());
+            }
+          });
+      result[0] = ui.note(page, "不用连接 VPN，直接检查服务器是否可用。");
+    }
+    if (type.equals("tailscale") && id != null) {
+      ui.softButton(page, "登录 Tailscale", 16, () -> tailscaleLogin(id));
+      ui.note(page, "首次使用需要登录一次。XDial 的登录与手机上的 Tailscale App 相互独立。");
     }
 
-    if (id != null) {
-      LinearLayout del = ui.section(page, null);
-      ui.action(del, "删除线路", ui.red, () -> deleteLine(id));
-    }
-
-    save[0] =
+    Runnable save =
         () -> {
           try {
             JSONObject built = build.call();
@@ -803,6 +936,8 @@ public final class MainActivity extends Activity {
             alert("请检查", e.getMessage());
           }
         };
+    if (id != null) ui.barButton(pg.bar, "删除", false, 0.55f, () -> deleteLine(id));
+    if (!group) ui.barButton(pg.bar, "保存", true, 1f, save);
   }
 
   static String portText(int port) {
@@ -854,7 +989,7 @@ public final class MainActivity extends Activity {
           boolean success = ok;
           runOnUiThread(
               () -> {
-                label.setText((success ? "✓ " : "✕ ") + text + "　重新测试");
+                label.setText((success ? "✓ " : "✕ ") + text);
                 label.setTextColor(success ? ui.green : ui.red);
               });
         });
@@ -892,6 +1027,22 @@ public final class MainActivity extends Activity {
         .show();
   }
 
+  void allLines() {
+    LinearLayout page = ui.page(root, false).column;
+    ui.nav(page, "全部线路", this::goBack);
+    JSONObject p = profileObj();
+    String exitId = exitLineId(Profiles.activeScenario(p));
+    View gap = new View(this);
+    page.addView(gap, new LinearLayout.LayoutParams(1, ui.dp(6)));
+    JSONArray lines = p.optJSONArray("lines");
+    if (lines != null)
+      for (int i = 0; i < lines.length(); i++) {
+        JSONObject line = lines.optJSONObject(i);
+        if (line != null && !line.optString("type").equals("direct")) lineCard(page, line, exitId);
+      }
+    ui.softButton(page, "＋ 添加线路", 8, this::addLine);
+  }
+
   // ---------------------------------------------------------------- import / export
 
   void importFile() {
@@ -925,67 +1076,65 @@ public final class MainActivity extends Activity {
   }
 
   void pastePage() {
-    LinearLayout page = ui.page(root);
-    final EditText[] box = new EditText[1];
-    ui.topBar(
-        page,
-        "粘贴配置",
-        this::goBack,
+    Ui.Page pg = ui.page(root, true);
+    ui.nav(pg.column, "粘贴配置", this::goBack);
+    EditText box = editor(pg.column, "", "在这里粘贴 XDial、Clash 或 Surge 配置");
+    ui.note(pg.column, "导入会替换当前全部线路和场景。线路密码等信息只保存在本机。");
+    ui.barButton(
+        pg.bar,
         "导入",
+        true,
+        1f,
         () -> {
-          String t = box[0].getText().toString();
+          String t = box.getText().toString();
           if (t.trim().isEmpty()) alert("请先粘贴配置", "支持 XDial JSON、Clash YAML 和 Surge 配置文本。");
           else confirmImport(t);
         });
-    box[0] = editor(page, "", "在这里粘贴 XDial、Clash 或 Surge 配置");
-    ui.footer(page, "导入会替换当前全部线路和场景。线路密码等信息只保存在本机。");
   }
 
   void jsonPage() {
-    LinearLayout page = ui.page(root);
-    final EditText[] box = new EditText[1];
-    ui.topBar(
-        page,
-        "完整配置",
-        this::goBack,
-        "保存",
-        () -> {
-          try {
-            JSONObject p = new JSONObject(box[0].getText().toString());
-            commit(p);
-          } catch (JSONException e) {
-            alert("JSON 格式错误", e.getMessage());
-          }
-        });
+    Ui.Page pg = ui.page(root, true);
+    ui.nav(pg.column, "完整配置", this::goBack);
     String pretty;
     try {
       pretty = new JSONObject(profile).toString(2);
     } catch (JSONException e) {
       pretty = profile;
     }
-    box[0] = editor(page, pretty, "");
-    ui.footer(page, "包含密码，请勿截图分享。保存前会检查格式，出错不会覆盖原配置。");
+    EditText box = editor(pg.column, pretty, "");
+    ui.note(pg.column, "包含密码，请勿截图分享。保存前会检查格式，出错不会覆盖原配置。");
+    ui.barButton(
+        pg.bar,
+        "保存",
+        true,
+        1f,
+        () -> {
+          try {
+            commit(new JSONObject(box.getText().toString()));
+          } catch (JSONException e) {
+            alert("JSON 格式错误", e.getMessage());
+          }
+        });
   }
 
   EditText editor(LinearLayout page, String value, String hint) {
-    LinearLayout card = ui.section(page, null);
     EditText e = new EditText(this);
     e.setText(value);
     e.setHint(hint);
     e.setTextSize(13);
     e.setTextColor(ui.text);
-    e.setHintTextColor(ui.secondary);
+    e.setHintTextColor(ui.chevron);
     e.setTypeface(Typeface.MONOSPACE);
     e.setGravity(Gravity.TOP | Gravity.START);
     e.setMinLines(14);
-    e.setBackground(null);
+    e.setBackground(ui.stroked(ui.card, ui.line, 1.5f, 16));
     e.setPadding(ui.dp(14), ui.dp(12), ui.dp(14), ui.dp(12));
     e.setHorizontallyScrolling(false);
     e.setInputType(
         InputType.TYPE_CLASS_TEXT
             | InputType.TYPE_TEXT_FLAG_MULTI_LINE
             | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-    card.addView(e, new LinearLayout.LayoutParams(-1, -2));
+    page.addView(e, ui.margins(-1, -2, 0, 10, 0, 0));
     return e;
   }
 
@@ -1009,8 +1158,7 @@ public final class MainActivity extends Activity {
                 () -> {
                   busy = false;
                   try {
-                    JSONObject p = new JSONObject(value);
-                    commit(p);
+                    commit(new JSONObject(value));
                   } catch (Exception e) {
                     alert("导入失败", Errors.friendly(e.getMessage()));
                   }
@@ -1045,60 +1193,66 @@ public final class MainActivity extends Activity {
   // ---------------------------------------------------------------- info pages
 
   void diagnosticsPage() {
-    LinearLayout page = ui.page(root);
-    ui.topBar(page, "连接诊断", this::goBack, null, null);
+    LinearLayout page = ui.page(root, false).column;
+    ui.nav(page, "连接诊断", this::goBack);
     JSONObject p = profileObj();
-    LinearLayout s = ui.section(page, null);
-    ui.row(s, null, "状态", null, XDialVpnService.state, null);
-    ui.row(s, null, "默认出口", null, Profiles.exitName(p), null);
+    LinearLayout c = ui.card(page, 20, 8);
+    ui.info(c, "状态", XDialVpnService.state);
+    ui.info(c, "默认出口", Profiles.exitName(p));
     long since = XDialVpnService.connectedAt;
-    if (since > 0) ui.row(s, null, "已连接", null, duration(System.currentTimeMillis() - since), null);
-    ui.row(s, null, "版本", null, VERSION, null);
+    if (since > 0) ui.info(c, "已连接", duration(System.currentTimeMillis() - since));
+    ui.info(c, "版本", VERSION);
     String raw = XDialVpnService.safeError;
-    LinearLayout e = ui.section(page, "最近一次错误");
-    if (raw.isEmpty()) ui.row(e, null, "无", null, null, null);
+    ui.sectionHeader(page, "最近一次错误", null, null);
+    LinearLayout e = ui.card(page, 20, 0);
+    e.setPadding(ui.dp(16), ui.dp(14), ui.dp(16), ui.dp(14));
+    if (raw.isEmpty()) e.addView(ui.text("无", 15, ui.secondary));
     else {
-      ui.row(e, null, Errors.friendly(raw), null, null, null);
+      e.addView(ui.bold(ui.text(Errors.friendly(raw), 15.5f, ui.red)));
       TextView detail = ui.text(raw, 12, ui.secondary);
       detail.setTypeface(Typeface.MONOSPACE);
       detail.setTextIsSelectable(true);
-      detail.setPadding(ui.dp(16), ui.dp(10), ui.dp(16), ui.dp(12));
+      detail.setPadding(0, ui.dp(8), 0, 0);
       e.addView(detail);
-      LinearLayout c = ui.section(page, null);
-      ui.action(
-          c,
+      ui.softButton(
+          page,
           "复制错误信息",
-          ui.accent,
+          12,
           () -> {
             getSystemService(ClipboardManager.class)
                 .setPrimaryClip(ClipData.newPlainText("XDial", raw));
             toast("已复制");
           });
     }
-    ui.footer(page, "错误信息可能包含服务器地址，分享前请检查。");
+    ui.note(page, "错误信息可能包含服务器地址，分享前请检查。");
   }
 
   void aboutPage() {
-    LinearLayout page = ui.page(root);
-    ui.topBar(page, "关于", this::goBack, null, null);
-    LinearLayout s = ui.section(page, null);
-    ui.row(s, null, "版本", null, VERSION, null);
-    ui.row(s, null, "源码基线", null, "XDial v0.9.1", null);
-    ui.footer(
-        page,
-        "这是 XDial 的非官方 Android 移植测试版，不是上游官方发行。\n\n"
-            + "· Android 同一时间只能开一个 VPN。\n"
-            + "· 修改配置或切换场景后，需要重新连接才生效。\n"
-            + "· 暂不支持 macOS 应用分流规则和「始终开启的 VPN」。\n"
-            + "· 卸载会删除本机保存的配置和登录状态。");
-    LinearLayout l = ui.section(page, null);
-    ui.row(l, null, "开源许可", "XDial MIT · sing-box GPLv3 等", null, () -> show(this::licensePage));
+    LinearLayout page = ui.page(root, false).column;
+    ui.nav(page, "关于", this::goBack);
+    LinearLayout c = ui.card(page, 20, 8);
+    ui.info(c, "版本", VERSION);
+    ui.info(c, "源码基线", "XDial v0.9.1");
+    LinearLayout t = ui.card(page, 20, 10);
+    t.setPadding(ui.dp(16), ui.dp(14), ui.dp(16), ui.dp(14));
+    TextView body =
+        ui.text(
+            "这是 XDial 的非官方 Android 移植测试版，不是上游官方发行。\n\n"
+                + "· Android 同一时间只能开一个 VPN。\n"
+                + "· 修改配置或切换场景后，需要重新连接才生效。\n"
+                + "· 暂不支持 macOS 应用分流规则和「始终开启的 VPN」。\n"
+                + "· 卸载会删除本机保存的配置和登录状态。",
+            14,
+            ui.secondary);
+    body.setLineSpacing(0, 1.25f);
+    t.addView(body);
+    ui.rowCard(page, "开源许可", "MIT · GPLv3 等", 10, () -> show(this::licensePage));
   }
 
   void licensePage() {
-    LinearLayout page = ui.page(root);
-    ui.topBar(page, "开源许可", this::goBack, null, null);
-    LinearLayout card = ui.section(page, null);
+    LinearLayout page = ui.page(root, false).column;
+    ui.nav(page, "开源许可", this::goBack);
+    LinearLayout card = ui.card(page, 20, 8);
     StringBuilder all = new StringBuilder();
     for (String name : new String[] {"XDial-MIT-LICENSE.txt", "THIRD_PARTY_NOTICES.txt"}) {
       try (InputStream in = getAssets().open(name)) {
