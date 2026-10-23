@@ -354,6 +354,12 @@ final class Profiles {
         }
       }
     String rest = exitDirect ? "其余直连" : "其余走" + exit;
+    if (!exitDirect && (targets.isEmpty() || (targets.size() == 1 && targets.contains(exit)))) {
+      // Rules that send traffic to the exit anyway change nothing; only direct ones are worth naming.
+      if (direct.isEmpty()) return "全部走" + exit;
+      String what = direct.size() == 1 ? direct.iterator().next() : direct.size() + " 条规则";
+      return what + "直连，" + rest;
+    }
     if (!proxied.isEmpty()) {
       String what = proxied.size() == 1 ? proxied.iterator().next() : proxied.size() + " 条规则";
       return what + "走" + String.join("、", targets) + "，" + rest;

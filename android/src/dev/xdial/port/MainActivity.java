@@ -28,7 +28,7 @@ import libbox.Libbox;
 import org.json.*;
 
 public final class MainActivity extends Activity {
-  static final String VERSION = "0.9.1-port.7";
+  static final String VERSION = "0.9.1-port.8";
   private static final int REQ_VPN = 10, REQ_IMPORT = 20, REQ_EXPORT = 21, REQ_LOC = 40, REQ_BG = 41;
   private static final String[] SS_METHODS = {
     "aes-128-gcm",
@@ -328,13 +328,14 @@ public final class MainActivity extends Activity {
    */
   static boolean mergeInto(JSONObject from, JSONObject to) throws JSONException {
     JSONArray old = from.optJSONArray("lines"), fresh = to.getJSONArray("lines");
-    java.util.HashSet<String> hosts = new java.util.HashSet<>();
+    java.util.HashMap<String, String> hosts = new java.util.HashMap<>(); // VPN host -> new line id
+    java.util.HashMap<String, String> moved = new java.util.HashMap<>(); // old line id -> new line id
     boolean carried = false;
     for (int i = 0; i < fresh.length(); i++) {
       JSONObject l = fresh.getJSONObject(i);
       if (!l.optString("type").equals("vpn")) continue;
       String h = host(l.optString("vpn_server"));
-      hosts.add(h);
+      hosts.put(h, l.optString("id"));
       for (int j = 0; old != null && j < old.length(); j++) {
         JSONObject o = old.optJSONObject(j);
         if (o == null || !o.optString("type").equals("vpn") || !host(o.optString("vpn_server")).equals(h)) continue;
@@ -347,11 +348,23 @@ public final class MainActivity extends Activity {
     for (int j = 0; old != null && j < old.length(); j++) {
       JSONObject o = old.optJSONObject(j);
       if (o == null || o.optString("type").equals("direct")) continue;
-      if (o.optString("type").equals("vpn") && hosts.contains(host(o.optString("vpn_server")))) continue;
+      String same = o.optString("type").equals("vpn") ? hosts.get(host(o.optString("vpn_server"))) : null;
+      if (same != null) {
+        moved.put(o.optString("id"), same);
+        continue;
+      }
       JSONObject copy = new JSONObject(o.toString());
       if (Profiles.line(to, copy.optString("id")) != null)
         copy.put("id", Profiles.newId(to, copy.optString("id")));
+      moved.put(o.optString("id"), copy.optString("id"));
       fresh.put(copy);
+    }
+    // Keep the exit that was chosen before (e.g. everything through the company VPN).
+    String exit = moved.get(exitLineId(Profiles.activeScenario(from)));
+    JSONObject start = Profiles.activeScenario(to);
+    if (exit != null && start != null) {
+      start.put("default_line_id", exit);
+      start.remove("default_subscription_id");
     }
     return carried;
   }
@@ -361,17 +374,27 @@ public final class MainActivity extends Activity {
    * single hand-made line), switch to the bundled enterprise profile.
    */
   void applyBundledDefault() {
-    if (busy || prefs().getBoolean("bundled_default_applied", false)) return;
+    if (busy) return;
     String start = bundledProfile();
     if (start == null) return;
+    if (prefs().getBoolean("bundled_default_applied", false)) {
+      followBundledNames(start);
+      return;
+    }
+    prefs().edit().putBoolean("bundled_names_v2", true).apply();
     prefs().edit().putBoolean("bundled_default_applied", true).apply();
     JSONObject cur = profileObj();
     if (!Profiles.ssidRules(cur).isEmpty()) return;
     boolean hadLines = Profiles.lineCount(cur) > 0, carried;
-    String vpnName = "公司 VPN";
+    String vpnName = "VPN", route;
     try {
       JSONObject next = new JSONObject(start);
       carried = mergeInto(cur, next);
+      JSONObject sc = Profiles.activeScenario(next);
+      List<String> wifi = Profiles.ssidRules(next);
+      route =
+          (sc == null ? "" : "「" + sc.optString("name") + "」" + Profiles.routeText(next, sc) + "。")
+              + (wifi.isEmpty() ? "" : "连上 Wi-Fi" + wifi.get(0) + "。");
       JSONArray lines = next.getJSONArray("lines");
       for (int i = 0; i < lines.length(); i++)
         if (lines.getJSONObject(i).optString("type").equals("vpn")) {
@@ -384,12 +407,42 @@ public final class MainActivity extends Activity {
     }
     goHome();
     String msg =
-        (carried ? "已沿用你之前填的用户名和密码。" : "请点线路「" + vpnName + "」填上用户名和密码。")
-            + "平时只有公司内网走 VPN，连上公司 Wi-Fi 时自动全部直连。";
+        (carried ? "已沿用你之前填的用户名和密码。" : "请点线路「" + vpnName + "」填上用户名和密码。") + route;
     String title = hadLines ? "已换成公司默认配置" : "已载入公司默认配置";
     if (XDialVpnService.active)
       ui.dialog(title, msg + "重新连接后生效。", true, btn("稍后", PLAIN, null), btn("重新连接", PRIMARY, this::reconnect));
     else ui.dialog(title, msg, true, btn("好", PLAIN, null));
+  }
+
+  /**
+   * 0.9.1-port.7 named the bundled VPN line「公司 VPN」; later bundles name it after the company.
+   * Renames it once when it still has that name, so the line reads the same as the bundle.
+   */
+  void followBundledNames(String start) {
+    if (prefs().getBoolean("bundled_names_v2", false)) return;
+    prefs().edit().putBoolean("bundled_names_v2", true).apply();
+    try {
+      JSONObject p = profileObj(), b = new JSONObject(start);
+      JSONArray bl = b.getJSONArray("lines"), lines = p.optJSONArray("lines");
+      boolean changed = false;
+      for (int i = 0; i < bl.length(); i++) {
+        JSONObject want = bl.getJSONObject(i);
+        if (!want.optString("type").equals("vpn")) continue;
+        String h = host(want.optString("vpn_server"));
+        for (int j = 0; lines != null && j < lines.length(); j++) {
+          JSONObject l = lines.getJSONObject(j);
+          if (l.optString("type").equals("vpn") && host(l.optString("vpn_server")).equals(h)
+              && l.optString("name").equals("公司 VPN") && !want.optString("name").equals("公司 VPN")) {
+            l.put("name", want.optString("name"));
+            changed = true;
+          }
+        }
+      }
+      if (!changed) return;
+      saveProfile(p.toString());
+      render();
+    } catch (Exception ignored) {
+    }
   }
 
   /** The scenario on screen: the one actually running (Wi-Fi may have picked it), else the chosen one. */
