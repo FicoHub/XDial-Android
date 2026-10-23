@@ -220,6 +220,47 @@ final class Profiles {
     return n;
   }
 
+  /** Scenario to run: one bound to the current Wi-Fi ({@code match_ssids}), else the user's pick. */
+  static String effectiveScenarioId(JSONObject p, String ssid) {
+    JSONObject chosen = activeScenario(p);
+    String base = chosen == null ? p.optString("active_scenario_id") : chosen.optString("id");
+    if (ssid == null || ssid.isEmpty()) return base;
+    JSONArray a = p.optJSONArray("scenarios");
+    if (a != null)
+      for (int i = 0; i < a.length(); i++) {
+        JSONObject s = a.optJSONObject(i);
+        JSONArray names = s == null ? null : s.optJSONArray("match_ssids");
+        if (names != null)
+          for (int j = 0; j < names.length(); j++)
+            if (ssid.equals(names.optString(j))) return s.optString("id");
+      }
+    return base;
+  }
+
+  /** "XINDONG → 公司" lines for every Wi-Fi-bound scenario; empty when the profile has none. */
+  static java.util.List<String> ssidRules(JSONObject p) {
+    java.util.ArrayList<String> out = new java.util.ArrayList<>();
+    JSONArray a = p.optJSONArray("scenarios");
+    if (a != null)
+      for (int i = 0; i < a.length(); i++) {
+        JSONObject s = a.optJSONObject(i);
+        JSONArray names = s == null ? null : s.optJSONArray("match_ssids");
+        if (names != null)
+          for (int j = 0; j < names.length(); j++)
+            if (!names.optString(j).isEmpty())
+              out.add("「" + names.optString(j) + "」时切到「" + s.optString("name") + "」");
+      }
+    return out;
+  }
+
+  static String cleanSsid(String raw) {
+    if (raw == null) return null;
+    String s = raw.trim();
+    if (s.length() >= 2 && s.startsWith("\"") && s.endsWith("\"")) s = s.substring(1, s.length() - 1);
+    if (s.isEmpty() || s.equals("<unknown ssid>") || s.equals("0x")) return null;
+    return s;
+  }
+
   static int bindingCount(JSONObject scenario) {
     JSONArray b = scenario == null ? null : scenario.optJSONArray("bindings");
     return b == null ? 0 : b.length();

@@ -15,7 +15,8 @@ try:
     v.adb('shell','svc','wifi','disable');time.sleep(4)
     results['wifi_to_cellular']=v.probe('cellular');assert results['wifi_to_cellular'].startswith('HTTP_OK'),results
 finally:
-    v.adb('shell','svc','wifi','enable');time.sleep(5)
+    v.adb('shell','svc','wifi','enable');time.sleep(3)
+    v.adb('shell','cmd','wifi','connect-network','AndroidWifi','open');time.sleep(6)
 results['cellular_to_wifi']=v.probe('wifi-restored');assert results['cellular_to_wifi'].startswith('HTTP_OK'),results
 v.stop()
 # Fresh installation to exercise the system consent denial, never app-op grants.
@@ -36,11 +37,13 @@ v.fixture(p);v.launch();v.click('连接',0)
 for _ in range(15):
     texts=[n.get('text') for n in v.ui().iter('node')]
     if 'OK' in texts:v.click('OK',0);continue
-    if '连接失败' in texts:break
+    if '连接失败' in texts or '正在重连' in texts:break
     time.sleep(.3)
 else:raise AssertionError(texts)
+# An unreachable server is retried automatically; while waiting there must be no VPN ingress.
 assert 'Active vpn type: 1' not in v.adb('shell','dumpsys','vpn_management')
-results['anyconnect_failed_start']='unreachable controlled endpoint failed without leaving a VPN ingress'
+results['anyconnect_failed_start']='unreachable controlled endpoint: '+('auto-retry scheduled' if '正在重连' in texts else 'failed')+', no VPN ingress left while waiting'
+# Wrong credentials are never retried (account lockout); simulate via the core's login-failure text.
 v.fixture(v.profile());v.launch()
 Path('build/android-evidence/android-lifecycle-results.json').write_text(json.dumps(results,ensure_ascii=False,indent=2))
 print(json.dumps(results,ensure_ascii=False,indent=2))

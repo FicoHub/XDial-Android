@@ -7,7 +7,12 @@ ADB=os.environ.get('ANDROID_HOME',str(_SDK.resolve() if (_SDK/'platform-tools').
 SERIAL='emulator-5580'
 EVIDENCE=Path('build/android-evidence')
 def adb(*args):
-    return subprocess.check_output([ADB,'-s',SERIAL,*args],text=True,stderr=subprocess.STDOUT)
+    for attempt in range(3):
+        try:
+            return subprocess.check_output([ADB,'-s',SERIAL,*args],text=True,stderr=subprocess.STDOUT)
+        except subprocess.CalledProcessError:
+            if attempt==2: raise
+            time.sleep(1.5)  # transient adb transport hiccup
 def ui():
     adb('shell','uiautomator','dump','/sdcard/xdial-test-ui.xml')
     return ET.fromstring(adb('shell','cat','/sdcard/xdial-test-ui.xml'))

@@ -19,8 +19,8 @@ import libbox.Libbox;
 import org.json.*;
 
 public final class MainActivity extends Activity {
-  static final String VERSION = "0.9.1-port.4";
-  private static final int REQ_VPN = 10, REQ_IMPORT = 20, REQ_EXPORT = 21;
+  static final String VERSION = "0.9.1-port.5";
+  private static final int REQ_VPN = 10, REQ_IMPORT = 20, REQ_EXPORT = 21, REQ_LOC = 40, REQ_BG = 41;
   private static final String[] SS_METHODS = {
     "aes-128-gcm",
     "aes-256-gcm",
@@ -53,6 +53,8 @@ public final class MainActivity extends Activity {
   private String summaryOf, summaryScenario = "", summaryExit = "", summaryProtocol = "", statusSignature;
   private int summaryRules;
   private boolean summarySplit;
+  private boolean keepAliveVisible, shownAlwaysOn;
+  private String shownAuto = "";
 
   // Live views of the home hero card; null on every other page.
   private FrameLayout heroCard;
@@ -90,6 +92,9 @@ public final class MainActivity extends Activity {
       loadProfile();
       if (!before.equals(profile)) render();
     }
+    if (keepAliveVisible) render();
+    // The user left it on but it is not running (e.g. the process died): reconnect now.
+    if (!busy && KeepAliveJob.revive(this)) toast("正在恢复连接…");
     handler.post(tick);
   }
 
@@ -150,6 +155,7 @@ public final class MainActivity extends Activity {
 
   void render() {
     heroCard = null;
+    keepAliveVisible = false;
     statusSignature = null;
     root.removeAllViews();
     current.run();
@@ -234,14 +240,23 @@ public final class MainActivity extends Activity {
     hero(page);
 
     LinearLayout tiles = new LinearLayout(this);
+    boolean auto = XDialVpnService.active && !XDialVpnService.autoSsid.isEmpty();
+    shownAuto = auto ? XDialVpnService.runningScenario : "";
     ui.tile(
         tiles,
         R.drawable.ic_layers,
-        "场景",
-        scenario == null ? "默认场景" : scenario.optString("name"),
+        auto ? "场景 · Wi-Fi 自动" : "场景",
+        auto ? XDialVpnService.runningScenario : scenario == null ? "默认场景" : scenario.optString("name"),
         this::pickScenario);
     ui.tile(tiles, R.drawable.ic_globe, "默认出口", Profiles.exitName(p), this::pickExit);
     page.addView(tiles, ui.margins(-1, -2, 0, 10, 0, 0));
+    int[] keep = keepAliveScore(p);
+    ui.rowCard(
+        page,
+        "保持常连",
+        keep[0] == keep[1] ? "已设置好" : "还差 " + (keep[1] - keep[0]) + " 项",
+        10,
+        () -> show(this::keepAlivePage));
 
     ui.sectionHeader(page, "线路", "＋ 添加", this::addLine);
     JSONArray lines = p.optJSONArray("lines");
@@ -430,6 +445,10 @@ public final class MainActivity extends Activity {
   }
 
   void updateStatus() {
+    if (keepAliveVisible && shownAlwaysOn != alwaysOnKnown()) {
+      render();
+      return;
+    }
     int ph = XDialVpnService.phase;
     boolean active = XDialVpnService.active;
     if (reconnectPending && !active && ph != XDialVpnService.DISCONNECTING) {
@@ -438,6 +457,11 @@ public final class MainActivity extends Activity {
       return;
     }
     if (heroCard == null) return;
+    String auto = active && !XDialVpnService.autoSsid.isEmpty() ? XDialVpnService.runningScenario : "";
+    if (!auto.equals(shownAuto) && back.isEmpty()) {
+      render(); // Wi-Fi switched the scenario: refresh the tiles too
+      return;
+    }
     if (summaryOf != profile) {
       JSONObject p = profileObj();
       JSONObject scenario = Profiles.activeScenario(p);
@@ -449,11 +473,23 @@ public final class MainActivity extends Activity {
       summaryRules = Profiles.bindingCount(scenario);
       summaryOf = profile;
     }
-    String exit = summaryExit;
+    // While connected, describe what is actually running (Wi-Fi may have picked the scenario).
+    String[] running = XDialVpnService.headline;
+    boolean useLive = active && running != null && running.length == 3 && !running[0].isEmpty();
+    String exit = useLive ? running[0] : summaryExit;
+    String protocol = useLive ? running[1] : summaryProtocol;
+    boolean split = useLive ? !running[2].isEmpty() : summarySplit;
+    int ruleCount = useLive ? XDialVpnService.runningRules : summaryRules;
+    String scenarioName =
+        useLive && !XDialVpnService.runningScenario.isEmpty()
+            ? XDialVpnService.runningScenario
+            : summaryScenario;
+    if (useLive && !XDialVpnService.autoSsid.isEmpty())
+      scenarioName += "（Wi-Fi「" + XDialVpnService.autoSsid + "」自动切换）";
     String rules =
-        summarySplit
-            ? "命中规则走" + summaryExit + "，其余直连"
-            : summaryRules > 0 ? summaryRules + " 条分流规则" : "全部流量走这里";
+        split
+            ? "命中规则走" + exit + "，其余直连"
+            : ruleCount > 0 ? ruleCount + " 条分流规则" : "全部流量走这里";
     String detail = XDialVpnService.detail;
 
     // mode: 0 idle (tone), 1 live (gradient), 2 failed (red)
@@ -473,7 +509,7 @@ public final class MainActivity extends Activity {
         mode = 1;
         pill = "已连接";
         dotColor = 0xff7cf2b0;
-        sub = summaryScenario + " · " + rules;
+        sub = scenarioName + " · " + rules;
         on = true;
         break;
       case XDialVpnService.RECOVERING:
@@ -523,7 +559,7 @@ public final class MainActivity extends Activity {
     // Touch views only on change: a steady UI saves battery and lets the system go idle.
     String signature =
         mode + "|" + pill + "|" + sub + "|" + exit + "|" + on + "|" + enabled + "|" + time + "|"
-            + sinceText + "|" + summaryProtocol + "|" + dotColor;
+            + sinceText + "|" + protocol + "|" + dotColor;
     if (signature.equals(statusSignature)) return;
     statusSignature = signature;
 
@@ -551,7 +587,7 @@ public final class MainActivity extends Activity {
     heroStats.setVisibility(stats ? View.VISIBLE : View.GONE);
     statTime.setText(time);
     statSince.setText(sinceText);
-    statProto.setText(summaryProtocol);
+    statProto.setText(protocol);
     heroSwitch.setColors(
         live ? 0x59ffffff : ui.accent, live ? 0x26000000 : (ui.dark ? 0x26ffffff : 0x26000000));
     if (heroSwitch.isChecked() != on) heroSwitch.setChecked(on, true);
@@ -653,6 +689,200 @@ public final class MainActivity extends Activity {
       commit(p);
     } catch (JSONException e) {
       alert("无法修改出口", e.getMessage());
+    }
+  }
+
+  // ---------------------------------------------------------------- stay connected
+
+  SharedPreferences prefs() {
+    return getSharedPreferences("xdial", MODE_PRIVATE);
+  }
+
+  boolean alwaysOnKnown() {
+    return XDialVpnService.active ? XDialVpnService.alwaysOn : prefs().getBoolean("always_on", false);
+  }
+
+  boolean batteryUnrestricted() {
+    return getSystemService(PowerManager.class).isIgnoringBatteryOptimizations(getPackageName());
+  }
+
+  boolean granted(String permission) {
+    return checkSelfPermission(permission) == android.content.pm.PackageManager.PERMISSION_GRANTED;
+  }
+
+  boolean locationOn() {
+    android.location.LocationManager lm = getSystemService(android.location.LocationManager.class);
+    return lm == null || Build.VERSION.SDK_INT < 28 || lm.isLocationEnabled();
+  }
+
+  /** Wi-Fi names are readable in the background: location permission (always) and location on. */
+  boolean wifiReadable() {
+    boolean fine = granted("android.permission.ACCESS_FINE_LOCATION");
+    boolean bg = Build.VERSION.SDK_INT < 29 || granted("android.permission.ACCESS_BACKGROUND_LOCATION");
+    return fine && bg && locationOn();
+  }
+
+  /** {done, total} for the 保持常连 checklist. */
+  int[] keepAliveScore(JSONObject p) {
+    boolean wifi = !Profiles.ssidRules(p).isEmpty();
+    int total = wifi ? 3 : 2;
+    int done = (alwaysOnKnown() ? 1 : 0) + (batteryUnrestricted() ? 1 : 0) + (wifi && wifiReadable() ? 1 : 0);
+    return new int[] {done, total};
+  }
+
+  void keepAlivePage() {
+    keepAliveVisible = true;
+    shownAlwaysOn = alwaysOnKnown();
+    if (XDialVpnService.active)
+      startService(new Intent(this, XDialVpnService.class).setAction("REFRESH"));
+    LinearLayout page = ui.page(root, false).column;
+    ui.nav(page, "保持常连", this::goBack);
+    TextView intro =
+        ui.text("打开后，熄屏、换网络、手机重启都不用再手动连接。断线会自动重试；账号密码错误不会重试，避免锁号。", 13.5f, ui.secondary);
+    intro.setLineSpacing(0, 1.2f);
+    intro.setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(4));
+    page.addView(intro);
+
+    step(
+        page,
+        "1",
+        "系统「始终开启的 VPN」",
+        alwaysOnKnown() ? "已开启" : XDialVpnService.active ? "未开启" : "未开启（连接后可检测）",
+        alwaysOnKnown(),
+        "在系统 VPN 列表里点 XDial 右边的齿轮，打开「始终开启的 VPN」。手机重启、App 被系统清理后会自动连回来。\n不要打开「屏蔽未使用 VPN 的连接」，否则 VPN 断开时手机会完全断网。",
+        "打开系统 VPN 设置",
+        () -> openSettings(new Intent(android.provider.Settings.ACTION_VPN_SETTINGS)));
+
+    step(
+        page,
+        "2",
+        "电池：不限制后台",
+        batteryUnrestricted() ? "已允许" : "受限制",
+        batteryUnrestricted(),
+        "避免省电策略在熄屏后关掉 XDial。三星手机还要在「设置 → 电池 → 后台使用限制」里确认 XDial 不在「休眠应用」中。",
+        "允许后台运行",
+        this::requestBattery);
+
+    JSONObject p = profileObj();
+    java.util.List<String> rules = Profiles.ssidRules(p);
+    if (!rules.isEmpty()) {
+      String status =
+          wifiReadable()
+              ? "已开启"
+              : !granted("android.permission.ACCESS_FINE_LOCATION")
+                  ? "需要位置权限"
+                  : !locationOn() ? "需要打开定位" : "需要「始终允许」";
+      step(
+          page,
+          "3",
+          "按 Wi-Fi 自动切换场景",
+          status,
+          wifiReadable(),
+          "连上 Wi-Fi " + String.join("；", rules) + "，离开后回到你选的场景。\nAndroid 规定读取 Wi-Fi 名称需要位置权限并选「始终允许」；XDial 只读 Wi-Fi 名称，不使用定位。",
+          "授权读取 Wi-Fi 名称",
+          this::requestWifiAccess);
+    }
+  }
+
+  void step(
+      LinearLayout page,
+      String index,
+      String title,
+      String status,
+      boolean ok,
+      String note,
+      String action,
+      Runnable onAction) {
+    LinearLayout c = ui.card(page, 22, 12);
+    c.setPadding(ui.dp(16), ui.dp(16), ui.dp(16), ui.dp(16));
+    LinearLayout head = new LinearLayout(this);
+    head.setGravity(Gravity.CENTER_VERTICAL);
+    TextView n = ui.bold(ui.text(ok ? "✓" : index, 14, ok ? (ui.dark ? ui.onFill : 0xffffffff) : ui.accent));
+    n.setGravity(Gravity.CENTER);
+    n.setBackground(ui.oval(ok ? ui.accent : ui.accentSoft));
+    head.addView(n, new LinearLayout.LayoutParams(ui.dp(28), ui.dp(28)));
+    TextView t = ui.bold(ui.text(title, 16, ui.text));
+    t.setPadding(ui.dp(12), 0, ui.dp(8), 0);
+    head.addView(t, new LinearLayout.LayoutParams(0, -2, 1));
+    head.addView(ui.text(status, 13.5f, ok ? ui.green : ui.orange));
+    c.addView(head);
+    TextView body = ui.text(note, 13.5f, ui.secondary);
+    body.setLineSpacing(0, 1.2f);
+    body.setPadding(0, ui.dp(10), 0, 0);
+    c.addView(body);
+    if (!ok) ui.softButton(c, action, 12, onAction);
+  }
+
+  void openSettings(Intent i) {
+    try {
+      startActivity(i);
+    } catch (ActivityNotFoundException e) {
+      alert("无法打开设置", "请在系统设置里手动查找。");
+    }
+  }
+
+  @SuppressWarnings("BatteryLife")
+  void requestBattery() {
+    Intent i =
+        new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+            .setData(Uri.parse("package:" + getPackageName()));
+    try {
+      startActivity(i);
+    } catch (ActivityNotFoundException e) {
+      openSettings(new Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+    }
+  }
+
+  void requestWifiAccess() {
+    if (!granted("android.permission.ACCESS_FINE_LOCATION")) {
+      new AlertDialog.Builder(this)
+          .setTitle("读取 Wi-Fi 名称")
+          .setMessage("Android 规定读取 Wi-Fi 名称需要位置权限。XDial 只用它判断是否连着公司 Wi-Fi，不使用定位。\n\n下一步请保留「精确」，选择「使用时允许」。")
+          .setPositiveButton(
+              "继续",
+              (d, w) ->
+                  requestPermissions(
+                      new String[] {
+                        "android.permission.ACCESS_FINE_LOCATION",
+                        "android.permission.ACCESS_COARSE_LOCATION"
+                      },
+                      REQ_LOC))
+          .setNegativeButton("取消", null)
+          .show();
+    } else if (Build.VERSION.SDK_INT >= 29
+        && !granted("android.permission.ACCESS_BACKGROUND_LOCATION")) {
+      new AlertDialog.Builder(this)
+          .setTitle("还差一步")
+          .setMessage("XDial 在后台也要知道连的是哪个 Wi-Fi。下一页请选择「始终允许」。")
+          .setPositiveButton(
+              "继续",
+              (d, w) ->
+                  requestPermissions(
+                      new String[] {"android.permission.ACCESS_BACKGROUND_LOCATION"}, REQ_BG))
+          .setNegativeButton("取消", null)
+          .show();
+    } else if (!locationOn()) {
+      new AlertDialog.Builder(this)
+          .setTitle("请打开定位")
+          .setMessage("系统关闭定位时，任何应用都读不到 Wi-Fi 名称。")
+          .setPositiveButton(
+              "去打开",
+              (d, w) ->
+                  openSettings(new Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS)))
+          .setNegativeButton("取消", null)
+          .show();
+    }
+  }
+
+  @Override
+  public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
+    super.onRequestPermissionsResult(request, permissions, results);
+    if (request == REQ_LOC || request == REQ_BG) {
+      if (XDialVpnService.active)
+        startService(new Intent(this, XDialVpnService.class).setAction("REFRESH"));
+      if (keepAliveVisible) render();
+      if (request == REQ_LOC && granted("android.permission.ACCESS_FINE_LOCATION") && !wifiReadable())
+        requestWifiAccess();
     }
   }
 
@@ -1203,6 +1433,13 @@ public final class MainActivity extends Activity {
     ui.info(c, "默认出口", Profiles.exitName(p));
     long since = XDialVpnService.connectedAt;
     if (since > 0) ui.info(c, "已连接", duration(System.currentTimeMillis() - since));
+    if (XDialVpnService.active) {
+      ui.info(c, "运行场景", XDialVpnService.runningScenario);
+      ui.info(
+          c,
+          "当前 Wi-Fi",
+          !XDialVpnService.wifi.isEmpty() ? XDialVpnService.wifi : wifiReadable() ? "未连接 Wi-Fi" : "无法读取（需要位置权限）");
+    }
     ui.info(c, "版本", VERSION);
     String raw = XDialVpnService.safeError;
     ui.sectionHeader(page, "最近一次错误", null, null);

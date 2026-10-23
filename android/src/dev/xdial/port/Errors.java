@@ -41,6 +41,20 @@ final class Errors {
     return "连接失败，详细原因可在「连接诊断」里查看。";
   }
 
+  /**
+   * Whether trying again later can help. Credentials, certificates and configuration errors are
+   * not retried: repeating a rejected login can lock the account.
+   */
+  static boolean retryable(String raw) {
+    if (raw == null) return true;
+    String s = raw.toLowerCase(Locale.ROOT);
+    if (has(s, "login failed", "401", "auth failed", "invalid credentials", "密码",
+        "available user groups", "x509", "certificate", "授权", "需要重新允许", "permission", "application rules",
+        "invalid", "missing", "required", "配置", "tailscale"))
+      return false;
+    return true;
+  }
+
   private static boolean has(String s, String... keys) {
     for (String k : keys) if (s.contains(k)) return true;
     return false;
