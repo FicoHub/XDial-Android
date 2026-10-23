@@ -90,7 +90,9 @@
 ## 与 macOS 版的差异
 
 - 沿用原仓库 iOS/tvOS 移动端的 DNS 路径：普通解析默认 `1.1.1.1`，AnyConnect 下发的企业 DNS 与显式启用的 MagicDNS 由原核心处理。
-- 本应用自身流量不进入自己建立的 VPN，避免回环；其他应用的 IPv4/IPv6 都进入 VPN。
+- 本应用自身流量不进入自己建立的 VPN，避免回环；其他应用的 IPv4 都进入 VPN。
+- IPv6 只在「默认出口为直连、且当前网络本身有 IPv6」时进入 VPN；默认出口是 AnyConnect 等线路时（这类线路只承载 IPv4），系统会屏蔽 IPv6，应用自动改用 IPv4，避免出现「连接被意外终止」。
+- 全部流量走公司 VPN 时，如果出口 IP 被 Google 识别为中国大陆，google.com 首页会跳到 google.cn（404）；Google 搜索、google.com.hk、Gmail、YouTube 不受影响，在地址栏直接输入关键词搜索即可。
 - 尚未移植：macOS 应用进程规则、无中断场景切换（切换场景会短暂重连）、完整的规则编辑界面。
 
 包名 `dev.xdial.port`；最低 API 26；目标 API 35。版本号见「更多 → 关于」。APK SHA-256 见同目录 `.apk.sha256` 文件。

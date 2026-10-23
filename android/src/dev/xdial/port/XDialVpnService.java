@@ -54,6 +54,10 @@ public final class XDialVpnService extends VpnService {
   private volatile CountDownLatch cancelCompletion;
   private int attempt;
   private boolean waitingRetry;
+  /** The running scenario sends unmatched traffic direct (not through a line). */
+  private boolean runningDirect;
+  /** IPv6 is routed into the tunnel; see {@link #carryIPv6}. */
+  private boolean tunIPv6;
   private final Runnable retry =
       () ->
           worker.execute(
@@ -148,6 +152,8 @@ public final class XDialVpnService extends VpnService {
 
       underlay = bestUnderlay();
       if (underlay == null) throw new Exception("没有可用网络");
+      runningDirect = Profiles.directExit(sc);
+      tunIPv6 = carryIPv6(underlay);
       libbox.Libbox_ engine =
           Libbox.new_(
               new Callback() {
@@ -348,6 +354,12 @@ public final class XDialVpnService extends VpnService {
       return;
     }
     if (core == null) return;
+    if (carryIPv6(n) != tunIPv6) {
+      set(RECOVERING, "正在切换网络", "");
+      stopCore();
+      connect();
+      return;
+    }
     if (wifiChanged && scenarioWouldChange()) {
       set(RECOVERING, "正在切换场景", name == null ? "离开了自动切换的 Wi-Fi" : "已连接 Wi-Fi「" + name + "」");
       stopCore();
@@ -393,6 +405,25 @@ public final class XDialVpnService extends VpnService {
       stopCore();
       connect();
     }
+  }
+
+  /**
+   * IPv6 goes into the tunnel only when it can leave it: unmatched traffic goes direct and the
+   * underlying network has a global IPv6 address. Lines such as AnyConnect carry IPv4 only.
+   */
+  private boolean carryIPv6(Network n) {
+    if (!runningDirect || n == null) return false;
+    LinkProperties props = connectivity.getLinkProperties(n);
+    if (props == null) return false;
+    for (LinkAddress la : props.getLinkAddresses()) {
+      java.net.InetAddress a = la.getAddress();
+      if (a instanceof java.net.Inet6Address
+          && !a.isLinkLocalAddress()
+          && !a.isSiteLocalAddress()
+          && !a.isLoopbackAddress()
+          && (a.getAddress()[0] & 0xfe) != 0xfc) return true;
+    }
+    return false;
   }
 
   private boolean scenarioWouldChange() {
@@ -451,12 +482,13 @@ public final class XDialVpnService extends VpnService {
             .setSession("XDial")
             .setMtu(1500)
             .addAddress("198.18.0.1", 15)
-            .addAddress("fd00::1", 126)
             .addRoute("0.0.0.0", 0)
-            .addRoute("::", 0)
             .addDnsServer("198.18.0.2")
             .addDisallowedApplication(getPackageName())
             .setBlocking(false);
+    // Without an IPv6 address or route, Android blocks IPv6 for every app, so apps fall back to
+    // IPv4 at once instead of reaching a tunnel that accepts the connection and then drops it.
+    if (tunIPv6) b.addAddress("fd00::1", 126).addRoute("::", 0);
     b.setUnderlyingNetworks(new Network[] {underlay});
     if (tun != null)
       try {

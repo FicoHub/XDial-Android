@@ -1,5 +1,31 @@
 # Android 移植验证报告
 
+## 0.9.1-port.9（2026-10-24）
+
+问题：出口选企业 AnyConnect 线路（全部流量走 VPN）时，在有 IPv6 的 Wi-Fi 下浏览器打不开 Google，提示「意外终止了连接」。
+
+原因：VPN 网卡同时接管了 IPv6，但 AnyConnect 线路只承载 IPv4。浏览器优先用 IPv6，本地协议栈先接受连接，上游无法连出后再关闭，浏览器不会回退到 IPv4。模拟器网络没有全局 IPv6，系统优先 IPv4，所以之前的测试没覆盖到。
+
+### 改动
+
+- 只有在运行场景的默认出口为直连、且底层网络有全局 IPv6 地址时，VPN 网卡才添加 IPv6 地址和路由；否则不添加，Android 会对所有应用屏蔽 IPv6、DNS 不再返回可用的 IPv6，应用立即使用 IPv4。
+- 网络切换导致上述条件变化时自动重建连接。
+
+### 实测（Android 16 模拟器，企业 AnyConnect 真实账号，全部流量走 VPN）
+
+| 测试 | 修复前 | 修复后 |
+|---|---|---|
+| Chrome 打开仅 IPv6 的地址 | `ERR_CONNECTION_CLOSED`（与真机现象一致） | 立即「主机不可达」，不再挂起后断开 |
+| 访问 IPv6 字面量地址 | TLS 握手中被关闭 | `NoRouteToHost`，立即失败 |
+| VPN 网卡 IPv6 | `fd00::1/126` + 默认路由 | 仅系统自带的链路本地地址，无 IPv6 路由 |
+| Google 搜索、google.com.hk、YouTube、Gmail（IPv4） | 正常 | 正常 |
+| 出口 IP | 新加坡 | 新加坡 |
+| `verify-emulator.py` / `verify-lifecycle.py` | — | 9 项 / 8 项全部通过 |
+
+附注：经企业 VPN 出口访问 google.com 首页会被 Google 重定向到 google.cn（出口 IP 被识别为中国大陆），与本应用无关；搜索页与其他 Google 服务正常。
+
+---
+
 ## 0.9.1-port.8（2026-10-24）
 
 目标：出口选企业 VPN 线路时，企业配置（分流规则、Wi-Fi 自动切换）照样生效，线路名称与企业配置一致。
