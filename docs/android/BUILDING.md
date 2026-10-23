@@ -60,6 +60,16 @@ bash scripts/android/build-apk.sh
 该目录不提交 Git、不进入源码归档、不公开。要继续覆盖升级，请私下备份这一目录；换密钥后 Android 不能直接覆盖安装已有包。
 本次证书 SHA-256：`54de45e7cfd4726cc4aa62489e9320db259548379a5e76fc08c2a4521b2c469e`。
 
+## 内置企业默认配置（私有构建）
+
+企业规则、端点只放在 git 忽略的 `PrivateConfig/` 中，不进入仓库与源码包。`PrivateConfig/android/company-profile.json` 存在时（XDial 配置文件格式，不含账号密码），`build-apk.sh` 会把它打进 APK 的 `assets/company-profile.json`：
+
+- 全新安装、或旧配置里没有按 Wi-Fi 切换的场景时，首次打开会载入它；已填写的同一 VPN 服务器账号沿用，其它线路保留。每次安装只做一次。
+- 「重置全部配置」恢复为该配置。
+- 连接前若场景用到的 VPN 线路缺用户名或密码，不会发起登录，而是引导填写。
+
+文件不存在时构建与行为同公开版。
+
 ## 验证入口
 
 ```sh

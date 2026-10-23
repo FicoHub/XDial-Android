@@ -22,6 +22,7 @@ v.stop()
 # Fresh installation to exercise the system consent denial, never app-op grants.
 v.adb('uninstall','dev.xdial.port')
 v.adb('install','--no-incremental',APK)
+v.launch();v.dismiss_default();v.fixture(v.profile())
 v.launch();v.click('连接',0);v.click_any('Cancel','CANCEL');v.click('好',0)
 assert 'Active vpn type: 1' not in v.adb('shell','dumpsys','vpn_management')
 results['vpn_consent_denied']='no VPN created'

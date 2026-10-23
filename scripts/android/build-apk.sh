@@ -26,7 +26,13 @@ rm -rf "$BUILD/classes" "$BUILD/generated" "$BUILD/dex"
 mkdir -p "$BUILD/aar" "$BUILD/classes" "$BUILD/generated" "$BUILD/dex"
 unzip -oq build/android-tools/libbox.aar -d "$BUILD/aar"
 "$SDK_TOOLS/aapt2" compile --dir android/res -o "$BUILD/resources.zip"
-"$SDK_TOOLS/aapt2" link -o "$BUILD/unsigned.apk" -I "$ANDROID_JAR" --manifest android/AndroidManifest.xml --java "$BUILD/generated" -A android/assets "$BUILD/resources.zip"
+# Private builds bundle the enterprise starting profile from the git-ignored PrivateConfig/.
+rm -rf "$BUILD/assets" && cp -R android/assets "$BUILD/assets"
+if [[ -f PrivateConfig/android/company-profile.json ]]; then
+ cp PrivateConfig/android/company-profile.json "$BUILD/assets/company-profile.json"
+ echo "bundled PrivateConfig/android/company-profile.json"
+fi
+"$SDK_TOOLS/aapt2" link -o "$BUILD/unsigned.apk" -I "$ANDROID_JAR" --manifest android/AndroidManifest.xml --java "$BUILD/generated" -A "$BUILD/assets" "$BUILD/resources.zip"
 find android/src "$BUILD/generated" -name '*.java' > "$BUILD/java-sources.txt"
 javac -encoding UTF-8 --release 8 -classpath "$ANDROID_JAR:$BUILD/aar/classes.jar" -d "$BUILD/classes" @"$BUILD/java-sources.txt"
 jar cf "$BUILD/app-classes.jar" -C "$BUILD/classes" .

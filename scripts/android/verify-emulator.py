@@ -44,6 +44,13 @@ def click_any(*options):
             if o in t: return click(o,0)
         time.sleep(.4)
     raise AssertionError('UI text missing: '+'/'.join(options))
+def dismiss_default():
+    """Private builds load the bundled company profile on first launch and say so once."""
+    for _ in range(8):
+        t=texts()
+        if '已载入公司默认配置' in t or '已换成公司默认配置' in t:
+            click_any('好','稍后');return
+        time.sleep(.4)
 def home():
     for _ in range(4): adb('shell','input','keyevent','KEYCODE_BACK');time.sleep(.2)
     launch()
@@ -104,6 +111,7 @@ def profile(password=None,split=False):
     return p
 if __name__=='__main__':
     results={}
+    launch();dismiss_default()
     fixture(profile());connect();results['direct']=probe('direct');assert results['direct'].startswith('HTTP_OK'),results
     results['dns']=probe(dns='example.com');assert results['dns'].startswith('DNS_OK'),results
     results['direct_udp']=probe(udp=True);assert results['direct_udp'].startswith('UDP_OK'),results

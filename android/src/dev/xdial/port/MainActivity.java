@@ -28,7 +28,7 @@ import libbox.Libbox;
 import org.json.*;
 
 public final class MainActivity extends Activity {
-  static final String VERSION = "0.9.1-port.6";
+  static final String VERSION = "0.9.1-port.7";
   private static final int REQ_VPN = 10, REQ_IMPORT = 20, REQ_EXPORT = 21, REQ_LOC = 40, REQ_BG = 41;
   private static final String[] SS_METHODS = {
     "aes-128-gcm",
@@ -92,6 +92,7 @@ public final class MainActivity extends Activity {
     loadProfile();
     current = homePage;
     render();
+    handler.post(this::applyBundledDefault);
   }
 
   @Override
@@ -281,6 +282,114 @@ public final class MainActivity extends Activity {
       toast("已保存");
     }
     return true;
+  }
+
+  // ---------------------------------------------------------------- bundled default
+
+  private String bundled;
+  private boolean bundledLoaded;
+
+  /** The enterprise starting profile bundled by private builds, already converted; null otherwise. */
+  String bundledProfile() {
+    if (bundledLoaded) return bundled;
+    bundledLoaded = true;
+    try (InputStream in = getAssets().open("company-profile.json")) {
+      JSONObject p =
+          new JSONObject(Libbox.importProfile(readAll(in, 1024 * 1024), "auto", "android-import", false));
+      // Start in a scenario picked by hand; Wi-Fi-bound ones switch in by themselves.
+      JSONArray scenarios = p.optJSONArray("scenarios");
+      for (int i = 0; scenarios != null && i < scenarios.length(); i++) {
+        JSONArray ssids = scenarios.getJSONObject(i).optJSONArray("match_ssids");
+        if (ssids == null || ssids.length() == 0) {
+          p.put("active_scenario_id", scenarios.getJSONObject(i).optString("id"));
+          break;
+        }
+      }
+      bundled = p.toString();
+    } catch (Exception e) {
+      bundled = null;
+    }
+    return bundled;
+  }
+
+  static String host(String server) {
+    String s = server == null ? "" : server.trim().replaceFirst("^[a-zA-Z]+://", "");
+    int cut = s.length();
+    for (char c : new char[] {':', '/'}) {
+      int i = s.indexOf(c);
+      if (i >= 0 && i < cut) cut = i;
+    }
+    return s.substring(0, cut).toLowerCase(Locale.ROOT);
+  }
+
+  /**
+   * Moves a hand-made profile onto the bundled one: the account typed for the same VPN server
+   * carries over, and any other lines are kept. Returns whether an account was carried.
+   */
+  static boolean mergeInto(JSONObject from, JSONObject to) throws JSONException {
+    JSONArray old = from.optJSONArray("lines"), fresh = to.getJSONArray("lines");
+    java.util.HashSet<String> hosts = new java.util.HashSet<>();
+    boolean carried = false;
+    for (int i = 0; i < fresh.length(); i++) {
+      JSONObject l = fresh.getJSONObject(i);
+      if (!l.optString("type").equals("vpn")) continue;
+      String h = host(l.optString("vpn_server"));
+      hosts.add(h);
+      for (int j = 0; old != null && j < old.length(); j++) {
+        JSONObject o = old.optJSONObject(j);
+        if (o == null || !o.optString("type").equals("vpn") || !host(o.optString("vpn_server")).equals(h)) continue;
+        if (o.optString("vpn_username").isEmpty()) continue;
+        l.put("vpn_username", o.optString("vpn_username")).put("vpn_password", o.optString("vpn_password"));
+        carried = true;
+        break;
+      }
+    }
+    for (int j = 0; old != null && j < old.length(); j++) {
+      JSONObject o = old.optJSONObject(j);
+      if (o == null || o.optString("type").equals("direct")) continue;
+      if (o.optString("type").equals("vpn") && hosts.contains(host(o.optString("vpn_server")))) continue;
+      JSONObject copy = new JSONObject(o.toString());
+      if (Profiles.line(to, copy.optString("id")) != null)
+        copy.put("id", Profiles.newId(to, copy.optString("id")));
+      fresh.put(copy);
+    }
+    return carried;
+  }
+
+  /**
+   * Once per installation, when the saved profile has no Wi-Fi scenarios (a fresh install or a
+   * single hand-made line), switch to the bundled enterprise profile.
+   */
+  void applyBundledDefault() {
+    if (busy || prefs().getBoolean("bundled_default_applied", false)) return;
+    String start = bundledProfile();
+    if (start == null) return;
+    prefs().edit().putBoolean("bundled_default_applied", true).apply();
+    JSONObject cur = profileObj();
+    if (!Profiles.ssidRules(cur).isEmpty()) return;
+    boolean hadLines = Profiles.lineCount(cur) > 0, carried;
+    String vpnName = "公司 VPN";
+    try {
+      JSONObject next = new JSONObject(start);
+      carried = mergeInto(cur, next);
+      JSONArray lines = next.getJSONArray("lines");
+      for (int i = 0; i < lines.length(); i++)
+        if (lines.getJSONObject(i).optString("type").equals("vpn")) {
+          vpnName = lines.getJSONObject(i).optString("name", vpnName);
+          break;
+        }
+      saveProfile(next.toString());
+    } catch (Exception e) {
+      return;
+    }
+    goHome();
+    String msg =
+        (carried ? "已沿用你之前填的用户名和密码。" : "请点线路「" + vpnName + "」填上用户名和密码。")
+            + "平时只有公司内网走 VPN，连上公司 Wi-Fi 时自动全部直连。";
+    String title = hadLines ? "已换成公司默认配置" : "已载入公司默认配置";
+    if (XDialVpnService.active)
+      ui.dialog(title, msg + "重新连接后生效。", true, btn("稍后", PLAIN, null), btn("重新连接", PRIMARY, this::reconnect));
+    else ui.dialog(title, msg, true, btn("好", PLAIN, null));
   }
 
   /** The scenario on screen: the one actually running (Wi-Fi may have picked it), else the chosen one. */
@@ -1147,6 +1256,18 @@ public final class MainActivity extends Activity {
       alert("配置还不完整", Errors.friendly(e.getMessage()));
       return;
     }
+    // Never send an empty login to the server: fill the account first.
+    JSONObject missing = Profiles.missingAccount(profileObj());
+    if (missing != null) {
+      String id = missing.optString("id");
+      ui.dialog(
+          "还没填账号",
+          "请先在线路「" + missing.optString("name", id) + "」里填上用户名和密码。",
+          true,
+          btn("取消", PLAIN, null),
+          btn("去填写", PRIMARY, () -> open(() -> lineEditor(id, null))));
+      return;
+    }
     Intent request = android.net.VpnService.prepare(this);
     if (request != null) {
       try {
@@ -1685,9 +1806,12 @@ public final class MainActivity extends Activity {
   }
 
   void resetProfile() {
+    String start = bundledProfile();
     ui.dialog(
         "重置全部配置？",
-        "会删除所有线路、场景和规则，恢复为只有直连的初始状态。",
+        start != null
+            ? "会删除所有线路、场景和规则，恢复为公司默认配置（不含用户名和密码）。"
+            : "会删除所有线路、场景和规则，恢复为只有直连的初始状态。",
         true,
         btn("取消", PLAIN, null),
         btn(
@@ -1695,7 +1819,7 @@ public final class MainActivity extends Activity {
             DANGER,
             () -> {
               try {
-                commit(new JSONObject(ProfileStore.DEFAULT));
+                commit(new JSONObject(start != null ? start : ProfileStore.DEFAULT));
               } catch (JSONException e) {
                 alert("无法重置", e.getMessage());
               }
@@ -1816,7 +1940,10 @@ public final class MainActivity extends Activity {
     ui.kv(g, "基于", null, "XDial v0.9.1 源码");
     ui.kv(g, "包名", null, getPackageName());
     ui.kv(g, "系统要求", null, "Android 8.0 及以上");
-    ui.note(page, "不含任何 VPN 账号、节点或订阅。配置经 Android Keystore 加密，只保存在这台手机上；卸载会一并删除。Android 同一时间只能开一个 VPN。");
+    ui.note(
+        page,
+        (bundledProfile() != null ? "已内置公司默认配置，不含用户名和密码。" : "不含任何 VPN 账号、节点或订阅。")
+            + "配置经 Android Keystore 加密，只保存在这台手机上；卸载会一并删除。Android 同一时间只能开一个 VPN。");
   }
 
   void licensePage() {

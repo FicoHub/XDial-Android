@@ -365,6 +365,29 @@ final class Profiles {
     return exitDirect ? "全部直连" : "全部走" + exit;
   }
 
+  /** A VPN line some scenario uses whose username or password is still empty; null when none. */
+  static JSONObject missingAccount(JSONObject p) {
+    java.util.HashSet<String> used = new java.util.HashSet<>();
+    JSONArray scenarios = p.optJSONArray("scenarios");
+    for (int i = 0; scenarios != null && i < scenarios.length(); i++) {
+      JSONObject s = scenarios.optJSONObject(i);
+      if (s == null) continue;
+      used.add(s.optString("default_line_id"));
+      JSONArray b = s.optJSONArray("bindings");
+      for (int j = 0; b != null && j < b.length(); j++) {
+        JSONObject binding = b.optJSONObject(j);
+        if (binding != null) used.add(binding.optString("line_id"));
+      }
+    }
+    JSONArray lines = p.optJSONArray("lines");
+    for (int i = 0; lines != null && i < lines.length(); i++) {
+      JSONObject l = lines.optJSONObject(i);
+      if (l == null || !l.optString("type").equals("vpn") || !used.contains(l.optString("id"))) continue;
+      if (l.optString("vpn_username").trim().isEmpty() || l.optString("vpn_password").isEmpty()) return l;
+    }
+    return null;
+  }
+
   static int lineCount(JSONObject p) {
     JSONArray a = p.optJSONArray("lines");
     int n = 0;

@@ -123,6 +123,9 @@ public final class XDialVpnService extends VpnService {
     try {
       if (VpnService.prepare(this) != null) throw new Fatal("需要重新允许 VPN 连接");
       JSONObject stored = new JSONObject(ProfileStore.read(this));
+      JSONObject missing = Profiles.missingAccount(stored);
+      if (missing != null)
+        throw new Fatal("请先在线路「" + missing.optString("name") + "」里填上用户名和密码");
       if (ssid == null) ssid = wifiName(null);
       wifi = ssid == null ? "" : ssid;
       String scenarioId = Profiles.effectiveScenarioId(stored, ssid);
