@@ -48,7 +48,8 @@ public final class XDialVpnService extends VpnService {
   private ConnectivityManager.NetworkCallback networkCallback;
   private volatile Network underlay;
   private volatile String ssid;
-  private String runningScenarioId;
+  /** Id of the scenario the running connection uses (Wi-Fi may have picked it). */
+  static volatile String runningScenarioId = "";
   private boolean foreground;
   private volatile CountDownLatch cancelCompletion;
   private int attempt;
@@ -374,12 +375,21 @@ public final class XDialVpnService extends VpnService {
         .apply();
   }
 
-  /** Location permission may have just been granted: read the Wi-Fi name again. */
+  /**
+   * Location permission may have just been granted, or the Wi-Fi list was edited: read the Wi-Fi
+   * name again and switch scenario when the rules now pick a different one.
+   */
   private void refreshWifi() {
     readAlwaysOn();
     Network n = underlay;
     String name = wifiName(null);
-    if (n != null && !Objects.equals(name, ssid)) networkChanged(n, name, false);
+    if (n != null && !Objects.equals(name, ssid)) {
+      networkChanged(n, name, false);
+    } else if (core != null && !cancelled.get() && scenarioWouldChange()) {
+      set(RECOVERING, "正在切换场景", "Wi-Fi 规则已更新");
+      stopCore();
+      connect();
+    }
   }
 
   private boolean scenarioWouldChange() {
@@ -554,6 +564,7 @@ public final class XDialVpnService extends VpnService {
       active = false;
       connectedAt = 0;
       autoSsid = "";
+      runningScenarioId = "";
       set(next, title, message);
     }
     stopSelf();

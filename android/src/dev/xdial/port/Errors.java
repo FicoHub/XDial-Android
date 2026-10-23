@@ -55,6 +55,13 @@ final class Errors {
     return true;
   }
 
+  /** The server rejected the account; retrying would only risk locking it. */
+  static boolean isCredential(String raw) {
+    if (raw == null) return false;
+    String s = raw.toLowerCase(Locale.ROOT);
+    return has(s, "login failed", "status 401", "401 ", "authentication failed", "auth failed", "invalid credentials", "密码错误");
+  }
+
   private static boolean has(String s, String... keys) {
     for (String k : keys) if (s.contains(k)) return true;
     return false;

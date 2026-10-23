@@ -85,9 +85,23 @@ final class Profiles {
     return l == null ? id : l.optString("name", id);
   }
 
+  static JSONObject scenario(JSONObject p, String id) {
+    JSONArray a = p.optJSONArray("scenarios");
+    if (a == null || id == null) return null;
+    for (int i = 0; i < a.length(); i++) {
+      JSONObject s = a.optJSONObject(i);
+      if (s != null && id.equals(s.optString("id"))) return s;
+    }
+    return null;
+  }
+
   /** Name of what unmatched traffic uses in the active scenario. */
   static String exitName(JSONObject p) {
-    JSONObject s = activeScenario(p);
+    return exitName(p, activeScenario(p));
+  }
+
+  /** Name of what unmatched traffic uses in the given scenario. */
+  static String exitName(JSONObject p, JSONObject s) {
     if (s == null) return "直连";
     String sub = s.optString("default_subscription_id");
     if (!sub.isEmpty()) {
@@ -108,13 +122,16 @@ final class Profiles {
    * those lines are the headline instead of "直连". split is "1" in that case.
    */
   static String[] headline(JSONObject p) {
-    JSONObject s = activeScenario(p);
+    return headline(p, activeScenario(p));
+  }
+
+  static String[] headline(JSONObject p, JSONObject s) {
     if (s != null && !s.optString("default_subscription_id").isEmpty())
-      return new String[] {exitName(p), "订阅", ""};
+      return new String[] {exitName(p, s), "订阅", ""};
     String exitId = s == null ? "direct" : s.optString("default_line_id", "direct");
     if (!exitId.isEmpty() && !exitId.equals("direct")) {
       JSONObject l = line(p, exitId);
-      return new String[] {exitName(p), l == null ? "" : typeLabel(l.optString("type")), ""};
+      return new String[] {exitName(p, s), l == null ? "" : typeLabel(l.optString("type")), ""};
     }
     java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>();
     java.util.LinkedHashSet<String> types = new java.util.LinkedHashSet<>();
@@ -133,7 +150,7 @@ final class Profiles {
           if (l != null) types.add(typeLabel(l.optString("type")));
         }
       }
-    if (names.isEmpty()) return new String[] {exitName(p), "直连", ""};
+    if (names.isEmpty()) return new String[] {exitName(p, s), "直连", ""};
     return new String[] {String.join("、", names), String.join(" / ", types), "1"};
   }
 
@@ -259,6 +276,104 @@ final class Profiles {
     if (s.length() >= 2 && s.startsWith("\"") && s.endsWith("\"")) s = s.substring(1, s.length() - 1);
     if (s.isEmpty() || s.equals("<unknown ssid>") || s.equals("0x")) return null;
     return s;
+  }
+
+  static boolean directExit(JSONObject s) {
+    if (s == null) return true;
+    if (!s.optString("default_subscription_id").isEmpty()) return false;
+    String id = s.optString("default_line_id", "direct");
+    return id.isEmpty() || id.equals("direct");
+  }
+
+  static JSONObject ruleSet(JSONObject p, String id) {
+    JSONArray a = p.optJSONArray("rule_sets");
+    if (a == null || id == null) return null;
+    for (int i = 0; i < a.length(); i++) {
+      JSONObject r = a.optJSONObject(i);
+      if (r != null && id.equals(r.optString("id"))) return r;
+    }
+    return null;
+  }
+
+  static String ruleName(JSONObject p, String id) {
+    JSONObject r = ruleSet(p, id);
+    String name = r == null ? "" : r.optString("name");
+    return name.isEmpty() ? (id == null || id.isEmpty() ? "规则" : id) : name;
+  }
+
+  /** "12 个域名 · 2 个 IP 段" or "远程规则"; never lists the entries themselves. */
+  static String ruleSummary(JSONObject r) {
+    if (r == null) return "";
+    java.util.ArrayList<String> parts = new java.util.ArrayList<>();
+    JSONArray d = r.optJSONArray("domains"), c = r.optJSONArray("cidrs");
+    if (d != null && d.length() > 0) parts.add(d.length() + " 个域名");
+    if (c != null && c.length() > 0) parts.add(c.length() + " 个 IP 段");
+    if (!r.optString("url").isEmpty()) parts.add("远程规则");
+    JSONArray apps = r.optJSONArray("applications"), procs = r.optJSONArray("processes");
+    if ((apps != null && apps.length() > 0) || (procs != null && procs.length() > 0)) parts.add("应用规则");
+    if (r.optBoolean("invert")) parts.add("取反");
+    return String.join(" · ", parts);
+  }
+
+  /** Names of the rules in a scenario that send traffic through a line. */
+  static java.util.List<String> rulesUsing(JSONObject p, JSONObject s, String lineId) {
+    java.util.LinkedHashSet<String> out = new java.util.LinkedHashSet<>();
+    JSONArray b = s == null ? null : s.optJSONArray("bindings");
+    if (b != null)
+      for (int i = 0; i < b.length(); i++) {
+        JSONObject binding = b.optJSONObject(i);
+        if (binding != null && lineId.equals(binding.optString("line_id")))
+          out.add(ruleName(p, binding.optString("rule_set_id")));
+      }
+    return new java.util.ArrayList<>(out);
+  }
+
+  /** One sentence on where traffic goes, e.g. "公司内网走公司 VPN，其余直连". */
+  static String routeText(JSONObject p, JSONObject s) {
+    if (s == null) return "全部直连";
+    boolean exitDirect = directExit(s);
+    String exit = exitName(p, s);
+    java.util.LinkedHashSet<String> proxied = new java.util.LinkedHashSet<>();
+    java.util.LinkedHashSet<String> targets = new java.util.LinkedHashSet<>();
+    java.util.LinkedHashSet<String> direct = new java.util.LinkedHashSet<>();
+    JSONArray b = s.optJSONArray("bindings");
+    if (b != null)
+      for (int i = 0; i < b.length(); i++) {
+        JSONObject binding = b.optJSONObject(i);
+        if (binding == null) continue;
+        String rule = ruleName(p, binding.optString("rule_set_id"));
+        String lineId = binding.optString("line_id");
+        if (!binding.optString("subscription_id").isEmpty()) {
+          proxied.add(rule);
+          targets.add("订阅");
+        } else if (lineId.isEmpty() || lineId.equals("direct")) {
+          direct.add(rule);
+        } else {
+          proxied.add(rule);
+          targets.add(lineName(p, lineId));
+        }
+      }
+    String rest = exitDirect ? "其余直连" : "其余走" + exit;
+    if (!proxied.isEmpty()) {
+      String what = proxied.size() == 1 ? proxied.iterator().next() : proxied.size() + " 条规则";
+      return what + "走" + String.join("、", targets) + "，" + rest;
+    }
+    if (!direct.isEmpty() && !exitDirect) {
+      String what = direct.size() == 1 ? direct.iterator().next() : direct.size() + " 条规则";
+      return what + "直连，" + rest;
+    }
+    return exitDirect ? "全部直连" : "全部走" + exit;
+  }
+
+  static int lineCount(JSONObject p) {
+    JSONArray a = p.optJSONArray("lines");
+    int n = 0;
+    if (a != null)
+      for (int i = 0; i < a.length(); i++) {
+        JSONObject l = a.optJSONObject(i);
+        if (l != null && !l.optString("type").equals("direct")) n++;
+      }
+    return n;
   }
 
   static int bindingCount(JSONObject scenario) {
