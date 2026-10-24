@@ -27,8 +27,9 @@ mkdir -p "$BUILD/aar" "$BUILD/classes" "$BUILD/generated" "$BUILD/dex"
 unzip -oq build/android-tools/libbox.aar -d "$BUILD/aar"
 "$SDK_TOOLS/aapt2" compile --dir android/res -o "$BUILD/resources.zip"
 # Private builds bundle the enterprise starting profile from the git-ignored PrivateConfig/.
+# PUBLIC=1 never does: public releases must not carry enterprise endpoints or rules.
 rm -rf "$BUILD/assets" && cp -R android/assets "$BUILD/assets"
-if [[ -f PrivateConfig/android/company-profile.json ]]; then
+if [[ "${PUBLIC:-0}" != 1 && -f PrivateConfig/android/company-profile.json ]]; then
  cp PrivateConfig/android/company-profile.json "$BUILD/assets/company-profile.json"
  echo "bundled PrivateConfig/android/company-profile.json"
 fi
@@ -50,10 +51,11 @@ if [[ ! -f "$KEYDIR/xdial-port.jks" ]]; then
 fi
 VERSION="$(sed -n 's/.*android:versionName="\([^"]*\)".*/\1/p' android/AndroidManifest.xml)"
 mkdir -p deliverables
-APK="$ROOT/deliverables/XDial-Android-$VERSION.apk"
+NAME="XDial-Android-$VERSION$([[ "${PUBLIC:-0}" == 1 ]] && echo -public).apk"
+APK="$ROOT/deliverables/$NAME"
 "$SDK_TOOLS/apksigner" sign --v4-signing-enabled false --ks "$KEYDIR/xdial-port.jks" --ks-key-alias xdial-port --ks-pass "file:$KEYDIR/password" --out "$APK" "$BUILD/aligned.apk"
 "$SDK_TOOLS/apksigner" verify --verbose --print-certs "$APK" > build/android-evidence/apk-signature.txt
 "$SDK_TOOLS/aapt2" dump badging "$APK" > build/android-evidence/apk-metadata.txt
 "$SDK_TOOLS/zipalign" -c -P 16 4 "$APK"
-(cd deliverables && shasum -a 256 "XDial-Android-$VERSION.apk" > "XDial-Android-$VERSION.apk.sha256")
+(cd deliverables && shasum -a 256 "$NAME" > "$NAME.sha256")
 printf 'APK: %s\n' "$APK"

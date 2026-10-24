@@ -254,7 +254,7 @@ final class Profiles {
     return base;
   }
 
-  /** "XINDONG → 公司" lines for every Wi-Fi-bound scenario; empty when the profile has none. */
+  /** "「Wi-Fi 名称」时切到「场景」" lines for every Wi-Fi-bound scenario; empty when there are none. */
   static java.util.List<String> ssidRules(JSONObject p) {
     java.util.ArrayList<String> out = new java.util.ArrayList<>();
     JSONArray a = p.optJSONArray("scenarios");

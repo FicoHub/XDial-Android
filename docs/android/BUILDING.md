@@ -70,6 +70,14 @@ bash scripts/android/build-apk.sh
 
 文件不存在时构建与行为同公开版。
 
+### 公开版与私有版
+
+本仓库是公开的，Releases 也公开可下载：
+
+- **公开 Release 只放公开版**：`PUBLIC=1 bash scripts/android/build-apk.sh` 不打包 `PrivateConfig`，产物名为 `XDial-Android-<版本>-public.apk`。
+- 上传前对每个文件运行 `scripts/android/check-public-release.sh <文件…>`：APK 内含 `company-profile.json`、或任何文件出现企业名称时拒绝。
+- 内置企业配置的私有版只发布到私有仓库，不进入公开 Release。
+
 飞机网络（高延迟、整段断流、UDP 被封）回归：`go build -o build/fakeanyconnect ./test/android/fakeanyconnect && build/fakeanyconnect -listen 0.0.0.0:18443 > build/android-evidence/fakeanyconnect.log 2>&1`（需先按上文设置 `GOWORK`；脚本从该日志判断是否重建了隧道），模拟器 `adb root` 后运行 `python3 scripts/android/verify-plane.py <标签>`。不需要企业账号。
 
 私有构建发布前，在 `PrivateConfig/android/` 中运行完整测试矩阵（安装升级、分流、Wi-Fi 切换、保持常连、四种屏幕尺寸界面、工具与回归），企业账号密码只从环境变量读取。
