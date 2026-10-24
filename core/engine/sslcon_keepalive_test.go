@@ -39,3 +39,13 @@ func TestAnyConnectSessionDiagnosticsAreStructuredAndRedacted(t *testing.T) {
 		t.Fatalf("unexpected diagnostics: %s", raw)
 	}
 }
+
+func TestAnyConnectTunnelMTUFitsTunnelledPaths(t *testing.T) {
+	for advertised, want := range map[int]int{
+		0: 1280, -1: 1280, 1406: 1280, 1500: 1280, 1280: 1280, 1200: 1200,
+	} {
+		if got := anyConnectTunnelMTU(advertised); got != want {
+			t.Fatalf("anyConnectTunnelMTU(%d) = %d, want %d", advertised, got, want)
+		}
+	}
+}

@@ -1,0 +1,149 @@
+diff --git a/auth/auth.go b/auth/auth.go
+--- a/auth/auth.go
++++ b/auth/auth.go
+@@ -30,8 +30,15 @@
+ 	handshakeDeadline time.Time
+ )
+ 
+-const DefaultHandshakeBudget = 25 * time.Second
++// DefaultHandshakeBudget covers the whole HTTPS login exchange. Satellite
++// in-flight Wi-Fi has 600 ms–2 s round trips plus queueing, so the several
++// request/response rounds of an AnyConnect login need far more than a
++// terrestrial budget.
++const DefaultHandshakeBudget = 60 * time.Second
+ 
++// dialTimeout bounds TCP connect plus the TLS handshake of one attempt.
++const dialTimeout = 20 * time.Second
++
+ // Profile 模板变量字段必须导出，虽然全局，但每次连接都被重置
+ type Profile struct {
+ 	Host string `json:"host"`
+@@ -90,7 +97,7 @@
+ 		dialTarget = Prof.HostWithPort
+ 	}
+ 	var err error
+-	Conn, err = tls.DialWithDialer(&net.Dialer{Timeout: 6 * time.Second}, "tcp4", dialTarget, &config)
++	Conn, err = tls.DialWithDialer(&net.Dialer{Timeout: dialTimeout}, "tcp4", dialTarget, &config)
+ 	if err != nil {
+ 		return err
+ 	}
+diff --git a/session/xdial_liveness.go b/session/xdial_liveness.go
+--- a/session/xdial_liveness.go
++++ b/session/xdial_liveness.go
+@@ -26,6 +26,7 @@
+ 	negotiatedDPD       int
+ 	negotiatedKeepalive int
+ 	effectiveDPD        time.Duration
++	deadAfter           time.Duration
+ 	active              bool
+ 	everConnected       bool
+ 	lastFrame           time.Time
+@@ -165,6 +166,7 @@
+ 			negotiatedDPD:       cSess.TLSDpdTime,
+ 			negotiatedKeepalive: cSess.TLSKeepaliveTime,
+ 			effectiveDPD:        tlsDPD,
++			deadAfter:           xdialDeadAfter(tlsDPD, xdialTLSMinDeadWindow),
+ 			active:              true,
+ 			everConnected:       true,
+ 			lastFrame:           now,
+@@ -173,6 +175,7 @@
+ 			negotiatedDPD:       cSess.DTLSDpdTime,
+ 			negotiatedKeepalive: cSess.DTLSKeepaliveTime,
+ 			effectiveDPD:        dtlsDPD,
++			deadAfter:           xdialDeadAfter(dtlsDPD, 0),
+ 		},
+ 		now: time.Now,
+ 	}
+@@ -208,6 +211,24 @@
+ 	}
+ }
+ 
++// xdialTLSMinDeadWindow is how long the TLS (CSTP) channel may stay silent
++// before the session is declared dead. TCP already retransmits across short
++// outages, and satellite in-flight Wi-Fi routinely stalls for 10–30 seconds
++// during beam handovers or under deep bufferbloat while the path itself is
++// still alive. Probing keeps the fast DPD cadence; only the verdict waits.
++// Real network changes are reported by the platform and torn down there.
++// DTLS keeps the short 2×DPD window so a lossy UDP path falls back to TLS
++// quickly.
++const xdialTLSMinDeadWindow = 45 * time.Second
++
++func xdialDeadAfter(dpd, minimum time.Duration) time.Duration {
++	dead := 2 * dpd
++	if dpd > 0 && dead < minimum {
++		dead = minimum
++	}
++	return dead
++}
++
+ func effectiveXDialDPD(force time.Duration, negotiatedSeconds int) time.Duration {
+ 	if force > 0 {
+ 		return force
+@@ -295,7 +316,11 @@
+ 		return nil, false
+ 	}
+ 	sinceFrame := now.Sub(state.lastFrame)
+-	if sinceFrame >= 2*state.effectiveDPD {
++	deadAfter := state.deadAfter
++	if deadAfter <= 0 {
++		deadAfter = 2 * state.effectiveDPD
++	}
++	if sinceFrame >= deadAfter {
+ 		return nil, true
+ 	}
+ 	if sinceFrame < state.effectiveDPD || state.dpdQueued {
+diff --git a/session/xdial_liveness_test.go b/session/xdial_liveness_test.go
+--- a/session/xdial_liveness_test.go
++++ b/session/xdial_liveness_test.go
+@@ -48,8 +48,49 @@
+ 		t.Fatalf("retry step = %#v, want one TLS DPD", retry)
+ 	}
+ 
+-	if result := liveness.step(started.Add(10 * time.Second)); !result.tlsDead {
+-		t.Fatalf("peer not declared dead after two DPD intervals: %#v", result)
++	// A silent TLS channel keeps probing through a satellite-style stall and
++	// is only declared dead once the minimum TLS window has passed.
++	if result := liveness.step(started.Add(10 * time.Second)); result.tlsDead {
++		t.Fatalf("TLS declared dead after a 10s stall: %#v", result)
++	}
++	cSess.xdialRecordQueued(xdialTLS)
++	cSess.XDialRecordWrite(xdialTLS, 0x03, nil)
++	if result := liveness.step(started.Add(44 * time.Second)); result.tlsDead {
++		t.Fatalf("TLS declared dead before the minimum window: %#v", result)
++	}
++	if result := liveness.step(started.Add(45 * time.Second)); !result.tlsDead {
++		t.Fatalf("TLS not declared dead after the minimum window: %#v", result)
++	}
++}
++
++func TestXDialTLSStallRecoversWhenFramesResume(t *testing.T) {
++	cSess := newXDialTestSession(t)
++	liveness := cSess.xdial
++	started := liveness.tls.lastFrame
++	resumed := started.Add(30 * time.Second)
++	if result := liveness.step(resumed); result.tlsDead {
++		t.Fatalf("TLS declared dead during a 30s stall: %#v", result)
++	}
++	liveness.now = func() time.Time { return resumed }
++	cSess.XDialRecordFrame(xdialTLS, 0x04)
++	if result := liveness.step(started.Add(70 * time.Second)); result.tlsDead {
++		t.Fatalf("resumed frame did not restart the TLS window: %#v", result)
++	}
++}
++
++func TestXDialDTLSKeepsShortDeadWindow(t *testing.T) {
++	cSess := newXDialTestSession(t)
++	liveness := cSess.xdial
++	started := liveness.tls.lastFrame
++	liveness.now = func() time.Time { return started }
++	cSess.XDialRecordTransportReady(xdialDTLS)
++	cSess.XDialRecordFrame(xdialTLS, 0x07)
++	if result := liveness.step(started.Add(9 * time.Second)); result.dtlsDead {
++		t.Fatalf("DTLS declared dead too early: %#v", result)
++	}
++	result := liveness.step(started.Add(10 * time.Second))
++	if !result.dtlsDead || result.tlsDead {
++		t.Fatalf("DTLS should fall back after two DPD intervals while TLS stays: %#v", result)
+ 	}
+ }
+ 

@@ -12,6 +12,21 @@ import (
 
 const forcedAnyConnectDPDSeconds = 5
 
+// maxAnyConnectTunnelMTU caps the inner packet size handed to the tunnel.
+// The server advertises the CSTP (TCP) MTU, but the same packets also ride
+// DTLS, where encapsulation adds ~60 bytes on top. In-flight and other
+// tunnelled Wi-Fi often has a path MTU below 1500 and drops ICMP, so oversized
+// DTLS datagrams vanish while small DPD probes still pass: the line looks
+// connected yet pages hang. 1280 (the IPv6 minimum) fits such paths.
+const maxAnyConnectTunnelMTU = 1280
+
+func anyConnectTunnelMTU(advertised int) int {
+	if advertised <= 0 || advertised > maxAnyConnectTunnelMTU {
+		return maxAnyConnectTunnelMTU
+	}
+	return advertised
+}
+
 type anyConnectDPDConfigurator interface {
 	SetXDialForceDPD(seconds int)
 }
@@ -80,7 +95,7 @@ func (c *VPNClient) Connect(cfg VPNConfig) (*VPNInfo, error) {
 		VPNAddress: cSess.VPNAddress,
 		VPNMask:    cSess.VPNMask,
 		DNS:        cSess.DNS,
-		MTU:        cSess.MTU,
+		MTU:        anyConnectTunnelMTU(cSess.MTU),
 		ServerAddr: cSess.ServerAddress,
 	}
 

@@ -161,6 +161,7 @@ public final class XDialVpnService extends VpnService {
                   if (cancelled.get()) return;
                   try {
                     String s = new JSONObject(json).optString("status");
+                    android.util.Log.i("XDial", "core status " + s);
                     if (s.equals("reconnecting")) set(RECOVERING, "正在恢复", "线路中断，正在自动重连");
                     if (s.equals("connected") && phase == RECOVERING) set(CONNECTED, "已连接", "");
                     if (s.equals("failed")) worker.execute(() -> lineFailed());
