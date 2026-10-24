@@ -28,7 +28,7 @@ import libbox.Libbox;
 import org.json.*;
 
 public final class MainActivity extends Activity {
-  static final String VERSION = "0.9.1-port.9";
+  static final String VERSION = "0.9.1-port.10";
   private static final int REQ_VPN = 10, REQ_IMPORT = 20, REQ_EXPORT = 21, REQ_LOC = 40, REQ_BG = 41;
   private static final String[] SS_METHODS = {
     "aes-128-gcm",
@@ -63,6 +63,8 @@ public final class MainActivity extends Activity {
   private String summaryOf, summaryScenarioId, statusSignature;
   private String summaryScenario = "", summaryTitle = "", summaryProtocol = "", summaryRoute = "";
   private boolean summaryAllDirect;
+  /** Scenario the home tiles were drawn for, and the one that is current now. */
+  private String drawnScenarioId = "", summaryShownId = "";
   private boolean keepAliveVisible, shownAlwaysOn;
   private String shownAuto = "";
 
@@ -509,6 +511,7 @@ public final class MainActivity extends Activity {
     more.setOnClickListener(v -> overflow(more));
     hero(page);
     JSONObject shown = shownScenario(p);
+    drawnScenarioId = shown == null ? "" : shown.optString("id");
     boolean auto = XDialVpnService.active && !XDialVpnService.autoSsid.isEmpty();
     shownAuto = auto ? XDialVpnService.runningScenario : "";
     LinearLayout tiles = new LinearLayout(this);
@@ -760,8 +763,14 @@ public final class MainActivity extends Activity {
       summaryProtocol = head[1];
       summaryAllDirect = head[2].isEmpty() && "直连".equals(head[1]);
       summaryRoute = Profiles.routeText(p, sc);
+      summaryShownId = sc == null ? "" : sc.optString("id");
       summaryOf = profile;
       summaryScenarioId = scenarioId;
+    }
+    // A reconnect can change the running scenario after the tiles were drawn: redraw them too.
+    if (!summaryShownId.equals(drawnScenarioId) && back.isEmpty() && !reconnectPending) {
+      render();
+      return;
     }
     String detail = XDialVpnService.detail;
 
