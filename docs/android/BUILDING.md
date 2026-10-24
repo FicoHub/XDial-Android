@@ -70,6 +70,8 @@ bash scripts/android/build-apk.sh
 
 文件不存在时构建与行为同公开版。
 
+私有构建发布前，在 `PrivateConfig/android/` 中运行完整测试矩阵（安装升级、分流、Wi-Fi 切换、保持常连、四种屏幕尺寸界面、工具与回归），企业账号密码只从环境变量读取。
+
 ## 验证入口
 
 ```sh

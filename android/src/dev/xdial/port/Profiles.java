@@ -394,6 +394,25 @@ final class Profiles {
     return null;
   }
 
+  /**
+   * Imported profiles start in their first scenario. When that one is bound to a Wi-Fi, start in
+   * the first scenario picked by hand instead; the Wi-Fi one switches in by itself.
+   */
+  static void preferManualScenario(JSONObject p) throws org.json.JSONException {
+    JSONObject active = activeScenario(p);
+    JSONArray ssids = active == null ? null : active.optJSONArray("match_ssids");
+    if (ssids == null || ssids.length() == 0) return;
+    JSONArray scenarios = p.optJSONArray("scenarios");
+    for (int i = 0; scenarios != null && i < scenarios.length(); i++) {
+      JSONObject s = scenarios.getJSONObject(i);
+      JSONArray bound = s.optJSONArray("match_ssids");
+      if (bound == null || bound.length() == 0) {
+        p.put("active_scenario_id", s.optString("id"));
+        return;
+      }
+    }
+  }
+
   static int lineCount(JSONObject p) {
     JSONArray a = p.optJSONArray("lines");
     int n = 0;

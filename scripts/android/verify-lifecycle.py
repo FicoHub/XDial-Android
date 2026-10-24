@@ -27,6 +27,8 @@ v.launch();v.click('连接',0);v.click_any('Cancel','CANCEL');v.click('好',0)
 assert 'Active vpn type: 1' not in v.adb('shell','dumpsys','vpn_management')
 results['vpn_consent_denied']='no VPN created'
 v.connect();results['fresh_install_approved']=v.probe('fresh-approved');assert results['fresh_install_approved'].startswith('HTTP_OK'),results
+# Start Settings fresh so the intent opens the VPN list, not a page left open earlier.
+v.adb('shell','am','force-stop','com.android.settings')
 v.adb('shell','am','start','-a','android.settings.VPN_SETTINGS');time.sleep(1)
 Path('build/android-evidence/vpn-settings-ui.xml').write_text(v.ET.tostring(v.ui(),encoding='unicode'))
 v.click('XDial');v.click_any('Disconnect','DISCONNECT');time.sleep(1);v.launch()

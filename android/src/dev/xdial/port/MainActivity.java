@@ -28,7 +28,7 @@ import libbox.Libbox;
 import org.json.*;
 
 public final class MainActivity extends Activity {
-  static final String VERSION = "0.9.1-port.10";
+  static final String VERSION = "0.9.2";
   private static final int REQ_VPN = 10, REQ_IMPORT = 20, REQ_EXPORT = 21, REQ_LOC = 40, REQ_BG = 41;
   private static final String[] SS_METHODS = {
     "aes-128-gcm",
@@ -298,15 +298,7 @@ public final class MainActivity extends Activity {
     try (InputStream in = getAssets().open("company-profile.json")) {
       JSONObject p =
           new JSONObject(Libbox.importProfile(readAll(in, 1024 * 1024), "auto", "android-import", false));
-      // Start in a scenario picked by hand; Wi-Fi-bound ones switch in by themselves.
-      JSONArray scenarios = p.optJSONArray("scenarios");
-      for (int i = 0; scenarios != null && i < scenarios.length(); i++) {
-        JSONArray ssids = scenarios.getJSONObject(i).optJSONArray("match_ssids");
-        if (ssids == null || ssids.length() == 0) {
-          p.put("active_scenario_id", scenarios.getJSONObject(i).optString("id"));
-          break;
-        }
-      }
+      Profiles.preferManualScenario(p);
       bundled = p.toString();
     } catch (Exception e) {
       bundled = null;
@@ -1852,7 +1844,9 @@ public final class MainActivity extends Activity {
                 () -> {
                   busy = false;
                   try {
-                    commit(new JSONObject(value));
+                    JSONObject imported = new JSONObject(value);
+                    Profiles.preferManualScenario(imported);
+                    commit(imported);
                   } catch (Exception e) {
                     alert("导入失败", Errors.friendly(e.getMessage()));
                   }

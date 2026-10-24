@@ -17,7 +17,7 @@ import (
 
 func main() {
 	ctx := include.Context(context.Background())
-	raw := `{"log":{"level":"info","timestamp":true},"inbounds":[{"type":"shadowsocks","tag":"controlled-ss","listen":"127.0.0.1","listen_port":18388,"method":"aes-128-gcm","password":"xdial-test-only-not-a-real-secret"}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"rules":[{"ip_cidr":["10.0.2.2/32"],"port":[18080,18081],"action":"route","outbound":"direct","override_address":"127.0.0.1"},{"action":"reject"}]}}`
+	raw := `{"log":{"level":"info","timestamp":true},"inbounds":[{"type":"shadowsocks","tag":"controlled-ss","listen":"127.0.0.1","listen_port":18388,"method":"aes-128-gcm","password":"xdial-test-only-not-a-real-secret"}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"rules":[{"ip_cidr":["10.0.2.2/32"],"port":[18080,18081],"action":"route","outbound":"direct","override_address":"127.0.0.1"},{"domain":["www.gstatic.com"],"port":[443],"action":"route","outbound":"direct"},{"action":"reject"}]}}`
 	options, err := json.UnmarshalExtendedContext[option.Options](ctx, []byte(raw))
 	if err != nil {
 		panic(err)
